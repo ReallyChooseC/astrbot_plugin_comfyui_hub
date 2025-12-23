@@ -1,0 +1,74 @@
+{
+  "server_url": {
+    "description": "ComfyUI 服务器地址",
+    "type": "string",
+    "default": "http://127.0.0.1:8188",
+    "hint": "ComfyUI API 服务器的完整地址，例如 http://127.0.0.1:8188"
+  },
+  "timeout": {
+    "description": "生成超时时间（秒）",
+    "type": "int",
+    "default": 300,
+    "hint": "等待图片生成的最长时间，超时将返回失败"
+  },
+  "default_negative_prompt": {
+    "description": "默认负面提示词",
+    "type": "text",
+    "default": "bad hands, low quality, blurry",
+    "hint": "文生图时的默认负面提示词"
+  },
+  "default_chain": {
+    "description": "默认使用合并转发",
+    "type": "bool",
+    "default": false,
+    "hint": "是否默认以合并转发形式发送图片"
+  },
+  "txt2img_workflow": {
+    "description": "文生图工作流文件名",
+    "type": "string",
+    "default": "txt2img.json",
+    "hint": "工作流文件名，文件需放在 data/astrbot_plugin_comfyui_hub/workflows/ 目录下"
+  },
+  "txt2img_positive_node": {
+    "description": "文生图正面提示词节点ID",
+    "type": "string",
+    "default": "6",
+    "hint": "工作流中正面提示词的节点编号"
+  },
+  "txt2img_negative_node": {
+    "description": "文生图负面提示词节点ID",
+    "type": "string",
+    "default": "7",
+    "hint": "工作流中负面提示词的节点编号"
+  },
+  "resolution_node": {
+    "description": "分辨率节点ID",
+    "type": "string",
+    "default": "",
+    "hint": "控制分辨率的节点编号，留空则自动查找 EmptyLatentImage 节点"
+  },
+  "resolution_width_field": {
+    "description": "宽度字段名",
+    "type": "string",
+    "default": "width",
+    "hint": "分辨率节点中宽度参数的字段名"
+  },
+  "resolution_height_field": {
+    "description": "高度字段名",
+    "type": "string",
+    "default": "height",
+    "hint": "分辨率节点中高度参数的字段名"
+  },
+  "upscale_node": {
+    "description": "超分节点ID",
+    "type": "string",
+    "default": "",
+    "hint": "控制超分倍率的节点编号，留空则不控制"
+  },
+  "upscale_scale_field": {
+    "description": "超分倍率字段名",
+    "type": "string",
+    "default": "resize_scale",
+    "hint": "超分节点中倍率参数的字段名"
+  }
+}
