@@ -28,7 +28,7 @@
     "timeout": 300,
     "default_negative_prompt": "bad hands, low quality, blurry",
     "default_chain": false,
-    "txt2img_workflow": "txt2img.json",
+    "txt2img_workflow": "example_text2img.json",
     "txt2img_positive_node": "6",
     "txt2img_negative_node": "7",
     "resolution_node": "",

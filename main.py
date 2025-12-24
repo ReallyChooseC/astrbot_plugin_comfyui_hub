@@ -1,6 +1,7 @@
-from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
-from astrbot.api import AstrBotConfig
+from astrbot.api import AstrBotConfig, logger
+from astrbot.api.message_components import Node, Image
 from pathlib import Path
 import shutil
 import time
@@ -10,7 +11,7 @@ from .text_to_image import TextToImage
 
 
 @register("astrbot_plugin_comfyui_hub", "ChooseC", "为 AstrBot 提供 ComfyUI 调用能力的插件，计划支持 ComfyUI 全功能。",
-          "1.0.0", "https://github.com/ReallyChooseC/astrbot_plugin_comfyui_hub")
+          "1.0.1", "https://github.com/ReallyChooseC/astrbot_plugin_comfyui_hub")
 class ComfyUIHub(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -21,7 +22,7 @@ class ComfyUIHub(Star):
         self.default_chain = config.get("default_chain", False)
 
         plugin_dir = Path(__file__).parent
-        data_root = plugin_dir.parent.parent / "data"
+        data_root = plugin_dir.parent.parent / "plugin_data"
         data_dir = data_root / "astrbot_plugin_comfyui_hub"
         data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -31,12 +32,13 @@ class ComfyUIHub(Star):
         self.temp_dir = data_dir / "temp"
         self.temp_dir.mkdir(exist_ok=True)
 
-        workflow_filename = config.get("txt2img_workflow", "txt2img.json")
+        workflow_filename = config.get("txt2img_workflow", "example_text2img.json")
         workflow_path = workflow_dir / workflow_filename
 
         if not workflow_path.exists():
-            example_path = plugin_dir / "example_workflow.json"
-            if example_path.exists():
+            workflow_path = workflow_dir / "example_text2img.json"
+            example_path = plugin_dir / "example_text2img.json"
+            if example_path.exists() and not workflow_path.exists():
                 shutil.copy(example_path, workflow_path)
 
         server_url = config.get("server_url", "http://127.0.0.1:8188")
@@ -151,9 +153,17 @@ class ComfyUIHub(Star):
             with open(temp_file, "wb") as f:
                 f.write(image_data)
 
-            if chain:
+            # Discord 文件大小限制检查
+            if event.get_platform_name() == "discord":
+                file_size = len(image_data)
+                if file_size > 10 * 1024 * 1024:
+                    size_mb = file_size / (1024 * 1024)
+                    yield event.plain_result(f"警告：生成的图片为 {size_mb:.1f}MB，超过 Discord 默认 10MB 的限制，可能无法发送")
+
+            is_aiocqhttp = event.get_platform_name() == "aiocqhttp"
+
+            if chain and is_aiocqhttp:
                 try:
-                    from astrbot.api.message_components import Node, Plain, Image
                     node = Node(
                         uin=event.get_sender_id(),
                         name="ComfyUI",
