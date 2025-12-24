@@ -11,7 +11,7 @@ from .text_to_image import TextToImage
 
 
 @register("astrbot_plugin_comfyui_hub", "ChooseC", "为 AstrBot 提供 ComfyUI 调用能力的插件，计划支持 ComfyUI 全功能。",
-          "1.0.1", "https://github.com/ReallyChooseC/astrbot_plugin_comfyui_hub")
+          "1.0.2", "https://github.com/ReallyChooseC/astrbot_plugin_comfyui_hub")
 class ComfyUIHub(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -124,20 +124,20 @@ class ComfyUIHub(Star):
         return params['positive'], params['negative'], params['chain'], params['width'], params['height'], params['scale']
 
     @filter.command("draw", alias={'绘图', '文生图', '画图'})
-    async def draw(self, event: AstrMessageEvent):
+    async def draw(self, event: AstrMessageEvent, message: MessageChain):
         """文生图指令，支持多种参数格式"""
-        message = event.message_str.strip()
+        text = event.message_str.strip()
 
         for cmd in ['draw', '绘图', '文生图', '画图']:
-            if message.startswith(f'/{cmd} ') or message.startswith(f'{cmd} '):
-                message = message.split(maxsplit=1)[1] if ' ' in message else ""
+            if text.startswith(f'/{cmd} ') or text.startswith(f'{cmd} '):
+                text = text.split(maxsplit=1)[1] if ' ' in text else ""
                 break
 
-        if not message:
+        if not text:
             yield event.plain_result("请输入提示词")
             return
 
-        params = self._parse_params(message)
+        params = self._parse_params(text)
         positive, negative, chain, width, height, scale = params
 
         if not positive:
@@ -153,12 +153,12 @@ class ComfyUIHub(Star):
             with open(temp_file, "wb") as f:
                 f.write(image_data)
 
-            # Discord 文件大小限制检查
-            if event.get_platform_name() == "discord":
+            # 检查文件大小限制（Discord 和 Telegram 都是 10MB）
+            if event.get_platform_name() in ["discord", "telegram"]:
                 file_size = len(image_data)
                 if file_size > 10 * 1024 * 1024:
                     size_mb = file_size / (1024 * 1024)
-                    yield event.plain_result(f"警告：生成的图片为 {size_mb:.1f}MB，超过 Discord 默认 10MB 的限制，可能无法发送")
+                    yield event.plain_result(f"警告：生成的图片为 {size_mb:.1f}MB，超过平台默认 10MB 限制，可能无法发送")
 
             is_aiocqhttp = event.get_platform_name() == "aiocqhttp"
 
