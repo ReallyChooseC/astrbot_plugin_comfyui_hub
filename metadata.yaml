@@ -1,6 +1,6 @@
 name: astrbot_plugin_comfyui_hub
 display_name: ComfyUI集成
 desc: 为 AstrBot 提供 ComfyUI 调用能力的插件，计划支持 ComfyUI 全功能。
-version: v1.0.3
+version: v1.0.4
 author: ChooseC
 repo: https://github.com/ReallyChooseC/astrbot_plugin_comfyui_hub
