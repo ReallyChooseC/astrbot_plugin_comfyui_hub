@@ -68,7 +68,7 @@ class ComfyUIHub(Star):
     def _load_block_data(self):
         self.block_tags = set()
         self.blocked_users = {}
-        self.censorship_enabled = False  # 默认关闭
+        self.censored_groups = set()  # 存储开启审查的群组ID
         
         if self.block_tags_file.exists():
             try:
@@ -88,7 +88,9 @@ class ComfyUIHub(Star):
             try:
                 with open(self.censorship_config_file, "r", encoding='utf-8') as f:
                     config = json.load(f)
-                    self.censorship_enabled = config.get("enabled", True)
+                    # 兼容旧版配置：如果旧版 enabled=True，则暂时不处理，等待新指令
+                    # 这里直接加载 groups 列表
+                    self.censored_groups = set(config.get("groups", []))
             except Exception as e:
                 logger.error(f"Error loading censorship config: {e}")
 
@@ -99,7 +101,7 @@ class ComfyUIHub(Star):
             with open(self.blocked_users_file, "w", encoding='utf-8') as f:
                 json.dump(self.blocked_users, f, ensure_ascii=False)
             with open(self.censorship_config_file, "w", encoding='utf-8') as f:
-                json.dump({"enabled": self.censorship_enabled}, f, ensure_ascii=False)
+                json.dump({"groups": list(self.censored_groups)}, f, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Error saving block data: {e}")
 
@@ -207,15 +209,26 @@ class ComfyUIHub(Star):
                 return
             
             if text.startswith('$enable_censorship'):
-                self.censorship_enabled = True
+                group_id = event.get_group_id()
+                if not group_id:
+                    yield event.plain_result("⚠️ 此命令仅支持在群组中使用。")
+                    return
+                
+                self.censored_groups.add(group_id)
                 self._save_block_data()
-                yield event.plain_result("✅ 已开启审查功能。")
+                yield event.plain_result(f"✅ 已在当前群组开启审查功能。")
                 return
             
             if text.startswith('$disable_censorship'):
-                self.censorship_enabled = False
-                self._save_block_data()
-                yield event.plain_result("✅ 已关闭审查功能。")
+                group_id = event.get_group_id()
+                if not group_id:
+                    yield event.plain_result("⚠️ 此命令仅支持在群组中使用。")
+                    return
+                
+                if group_id in self.censored_groups:
+                    self.censored_groups.remove(group_id)
+                    self._save_block_data()
+                yield event.plain_result(f"✅ 已在当前群组关闭审查功能。")
                 return
             
             if text.startswith('$add_block_tag'):
@@ -261,8 +274,12 @@ class ComfyUIHub(Star):
         params = self._parse_params(text)
         positive, negative, chain, width, height, scale = params
 
+        # 检查是否开启审查（仅针对群聊且在开启列表中）
+        group_id = event.get_group_id()
+        is_censorship_enabled = group_id and group_id in self.censored_groups
+
         # 检查正向和反向提示词是否包含违规词（仅在审查开启时）
-        if self.censorship_enabled:
+        if is_censorship_enabled:
             found_tags = []
             for tag in self.block_tags:
                 if tag.lower() in positive.lower() or (negative and tag.lower() in negative.lower()):
@@ -275,7 +292,7 @@ class ComfyUIHub(Star):
                 return
 
         # 自动补全安全提示词（仅在审查开启时）
-        if self.censorship_enabled:
+        if is_censorship_enabled:
             if not any(word in positive.lower() for word in ["safe for work", "sfw", "cencored", "censored"]):
                 positive = positive.rstrip(", ") + ", sfw" if positive else "sfw"
             
