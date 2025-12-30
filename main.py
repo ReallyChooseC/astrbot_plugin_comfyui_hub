@@ -1,7 +1,8 @@
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
+from astrbot.api.event.filter import PermissionType
 from astrbot.api.star import Context, Star, register
 from astrbot.api import AstrBotConfig, logger
-from astrbot.api.message_components import Node, Image
+from astrbot.api.message_components import Node, Image, Reply
 from pathlib import Path
 import shutil
 import time
@@ -14,7 +15,7 @@ from .text_to_image import TextToImage
 
 
 @register("astrbot_plugin_comfyui_hub", "ChooseC", "为 AstrBot 提供 ComfyUI 调用能力的插件，计划支持 ComfyUI 全功能。",
-          "1.0.4", "https://github.com/ReallyChooseC/astrbot_plugin_comfyui_hub")
+          "1.0.5", "https://github.com/ReallyChooseC/astrbot_plugin_comfyui_hub")
 class ComfyUIHub(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -38,6 +39,7 @@ class ComfyUIHub(Star):
         self.block_tags_file = data_dir / "block_tags.json"
         self.blocked_users_file = data_dir / "blocked_users.json"
         self.censorship_config_file = data_dir / "censorship_config.json"
+        self.sent_messages_file = data_dir / "sent_messages.json"
         self._load_block_data()
 
         workflow_filename = config.get("txt2img_workflow", "example_text2img.json")
@@ -69,6 +71,8 @@ class ComfyUIHub(Star):
         self.block_tags = set()
         self.blocked_users = {}
         self.censored_groups = set()  # 存储开启审查的群组ID
+        self.sent_messages = {}  # 存储插件发送的消息ID {group_id: [{message_id: timestamp}]}
+        self.message_cache_ttl = 120  # 消息ID缓存时间（秒），默认2分钟
         
         if self.block_tags_file.exists():
             try:
@@ -93,6 +97,32 @@ class ComfyUIHub(Star):
                     self.censored_groups = set(config.get("groups", []))
             except Exception as e:
                 logger.error(f"Error loading censorship config: {e}")
+                
+        if self.sent_messages_file.exists():
+            try:
+                with open(self.sent_messages_file, "r", encoding='utf-8') as f:
+                    # 转换键为字符串类型（JSON默认键为字符串）
+                    data = json.load(f)
+                    self.sent_messages = {str(k): v for k, v in data.items()}
+                    # 清理过期的消息ID
+                    self._cleanup_expired_messages()
+            except Exception as e:
+                logger.error(f"Error loading sent messages: {e}")
+
+    def _cleanup_expired_messages(self):
+        """清理过期的消息ID"""
+        current_time = time.time()
+        for group_id in list(self.sent_messages.keys()):
+            # 过滤出未过期的消息
+            valid_messages = [
+                msg_data for msg_data in self.sent_messages[group_id]
+                if isinstance(msg_data, dict) and
+                current_time - msg_data.get('timestamp', 0) <= self.message_cache_ttl
+            ]
+            self.sent_messages[group_id] = valid_messages
+            # 如果群组没有有效消息，删除该群组记录
+            if not valid_messages:
+                del self.sent_messages[group_id]
 
     def _save_block_data(self):
         try:
@@ -102,6 +132,10 @@ class ComfyUIHub(Star):
                 json.dump(self.blocked_users, f, ensure_ascii=False)
             with open(self.censorship_config_file, "w", encoding='utf-8') as f:
                 json.dump({"groups": list(self.censored_groups)}, f, ensure_ascii=False)
+            # 保存前清理过期消息
+            self._cleanup_expired_messages()
+            with open(self.sent_messages_file, "w", encoding='utf-8') as f:
+                json.dump(self.sent_messages, f, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Error saving block data: {e}")
 
@@ -117,11 +151,11 @@ class ComfyUIHub(Star):
         }
 
         # 检查 chain 参数
-        chain_pattern = r'(?:chain|转发|合并转发)\s*[:=]?\s*(true|false|是|否)'
+        chain_pattern = r'(?:chain|转发|合并转发)\s*[:=]?\s*(true|false|是|否|开|关)'
         chain_match = re.search(chain_pattern, text, re.IGNORECASE)
         if chain_match:
             value = chain_match.group(1).lower()
-            params['chain'] = value in ['true', '是']
+            params['chain'] = value in ['true', '是', '开']
             text = re.sub(chain_pattern, '', text, flags=re.IGNORECASE).strip()
 
         # 检查超分倍率参数
@@ -303,7 +337,32 @@ class ComfyUIHub(Star):
             yield event.plain_result("请输入正面提示词")
             return
 
-        yield event.plain_result("正在生成图片...")
+        # 发送"正在生成图片..."消息（使用 API 以获取消息ID）
+        text_msg_id = None
+        group_id = event.get_group_id()
+        is_aiocqhttp = event.get_platform_name() == "aiocqhttp"
+
+        if is_aiocqhttp and group_id:
+            try:
+                client = event.bot
+                result = await client.api.call_action(
+                    "send_group_msg",
+                    group_id=int(group_id),
+                    message="正在生成图片..."
+                )
+                if result:
+                    # 尝试多种可能的返回结构
+                    if isinstance(result, dict):
+                        if 'data' in result and result['data']:
+                            text_msg_id = result['data'].get('message_id')
+                        elif 'message_id' in result:
+                            text_msg_id = result['message_id']
+                        elif 'retcode' in result and result['retcode'] == 0:
+                            text_msg_id = result.get('data', {}).get('message_id')
+                    elif isinstance(result, (int, str)):
+                        text_msg_id = str(result)
+            except Exception as e:
+                logger.error(f"发送文字消息失败: {e}")
 
         image_data = await self.txt2img.generate(positive, negative, width, height, scale)
 
@@ -383,19 +442,168 @@ class ComfyUIHub(Star):
                         logger.error(f"图片压缩失败: {e}")
                         yield event.plain_result(f"⚠️ 警告：生成的图片为 {size_mb:.1f}MB，超过平台默认 10MB 限制，压缩失败")
 
-            is_aiocqhttp = event.get_platform_name() == "aiocqhttp"
+            sent_msg_id = None
 
-            if chain and is_aiocqhttp:
-                try:
-                    node = Node(
-                        uin=event.get_sender_id(),
-                        name="ComfyUI",
-                        content=[Image.fromFileSystem(str(temp_file))]
+            if is_aiocqhttp and group_id:
+                # 使用 aiocqhttp 底层 API 发送消息，以获取消息 ID
+                client = event.bot
+
+                if chain:
+                    # 合并转发
+                    try:
+                        node = Node(
+                            uin=event.get_sender_id(),
+                            name="ComfyUI",
+                            content=[Image.fromFileSystem(str(temp_file))]
+                        )
+                        # 使用 send_group_forward_msg 发送合并转发
+                        result = await client.api.call_action(
+                            "send_group_forward_msg",
+                            group_id=int(group_id),
+                            messages=[node]
+                        )
+                        if result:
+                            # 尝试多种可能的返回结构
+                            if isinstance(result, dict):
+                                if 'data' in result and result['data']:
+                                    sent_msg_id = result['data'].get('message_id') if isinstance(result['data'], dict) else result['data']
+                                elif 'message_id' in result:
+                                    sent_msg_id = result['message_id']
+                            elif isinstance(result, (int, str)):
+                                sent_msg_id = str(result)
+                    except Exception as e:
+                        logger.error(f"合并转发发送失败: {e}，改用普通图片发送")
+                        # 失败则回退到普通图片发送
+                        result = await client.api.call_action(
+                            "send_group_msg",
+                            group_id=int(group_id),
+                            message=[Image.fromFileSystem(str(temp_file))]
+                        )
+                        if result:
+                            if isinstance(result, dict):
+                                if 'data' in result and result['data']:
+                                    sent_msg_id = result['data'].get('message_id')
+                                elif 'message_id' in result:
+                                    sent_msg_id = result['message_id']
+                            elif isinstance(result, (int, str)):
+                                sent_msg_id = str(result)
+                else:
+                    # 普通图片消息
+                    result = await client.api.call_action(
+                        "send_group_msg",
+                        group_id=int(group_id),
+                        message=[Image.fromFileSystem(str(temp_file))]
                     )
-                    yield event.chain_result([node])
-                except Exception:
-                    yield event.image_result(str(temp_file))
+                    if result:
+                        if isinstance(result, dict):
+                            if 'data' in result and result['data']:
+                                sent_msg_id = result['data'].get('message_id')
+                            elif 'message_id' in result:
+                                sent_msg_id = result['message_id']
+                        elif isinstance(result, (int, str)):
+                            sent_msg_id = str(result)
             else:
-                yield event.image_result(str(temp_file))
+                # 非 aiocqhttp 平台或私聊，使用默认方法
+                if chain:
+                    try:
+                        node = Node(
+                            uin=event.get_sender_id(),
+                            name="ComfyUI",
+                            content=[Image.fromFileSystem(str(temp_file))]
+                        )
+                        yield event.chain_result([node])
+                    except Exception:
+                        yield event.image_result(str(temp_file))
+                else:
+                    yield event.image_result(str(temp_file))
+
+            # 记录所有发送的消息ID（带时间戳）
+            if group_id:
+                group_id_str = str(group_id)
+                if group_id_str not in self.sent_messages:
+                    self.sent_messages[group_id_str] = []
+                # 先记录文字消息ID
+                if text_msg_id:
+                    self.sent_messages[group_id_str].append({
+                        'message_id': str(text_msg_id),
+                        'timestamp': time.time(),
+                        'user_id': str(event.get_sender_id())
+                    })
+                # 再记录图片消息ID
+                if sent_msg_id:
+                    self.sent_messages[group_id_str].append({
+                        'message_id': str(sent_msg_id),
+                        'timestamp': time.time(),
+                        'user_id': str(event.get_sender_id())
+                    })
+                self._save_block_data()
+            # 停止事件传播，避免触发 LLM
+            event.stop_event()
         else:
             yield event.plain_result("生成失败")
+
+    @filter.command("delete", alias={'撤回', 'recall'})
+    async def delete_msg(self, event: AstrMessageEvent):
+        """引用撤回绘图功能输出的消息"""
+        chain = event.get_messages()
+        if not chain:
+            return
+
+        first_seg = chain[0] if len(chain) > 0 else None
+        if not first_seg:
+            return
+
+        # 检查是否为 aiocqhttp 平台（仅支持此平台）
+        if event.get_platform_name() != "aiocqhttp":
+            yield event.plain_result("❌ 此功能仅支持 aiocqhttp 平台")
+            return
+
+        # 必须引用消息
+        if not isinstance(first_seg, Reply):
+            yield event.plain_result("❌ 请引用要撤回的绘图消息")
+            return
+
+        group_id = event.get_group_id()
+        current_time = time.time()
+        is_admin = event.is_admin()
+
+        # 管理员可以撤回任何消息，普通用户只能撤回绘图插件输出的消息
+        is_valid_message = is_admin
+        msg_index_to_remove = None
+
+        # 对于普通用户，验证消息是否在缓存中
+        if not is_admin and group_id:
+            group_id_str = str(group_id)
+            sent_msgs = self.sent_messages.get(group_id_str, [])
+            # 清理过期消息并验证
+            valid_msgs = []
+            for i, msg_data in enumerate(sent_msgs):
+                if not isinstance(msg_data, dict):
+                    continue
+                msg_id = msg_data.get('message_id')
+                msg_timestamp = msg_data.get('timestamp', 0)
+                # 检查是否过期
+                if current_time - msg_timestamp > self.message_cache_ttl:
+                    continue
+                # 检查是否为目标消息
+                if msg_id == str(first_seg.id):
+                    is_valid_message = True
+                    msg_index_to_remove = i
+                valid_msgs.append(msg_data)
+            # 更新清理后的消息列表
+            self.sent_messages[group_id_str] = valid_msgs
+        if not is_valid_message:
+            return
+
+        try:
+            client = event.bot
+            await client.delete_msg(message_id=int(first_seg.id))
+            # 从记录中移除已撤回的消息ID
+            if is_valid_message and group_id and msg_index_to_remove is not None:
+                group_id_str = str(group_id)
+                self.sent_messages[group_id_str].pop(msg_index_to_remove)
+                self._save_block_data()
+            # 停止事件传播，不触发 LLM
+            event.stop_event()
+        except Exception as e:
+            logger.error(f"撤回失败: {e}")
