@@ -172,7 +172,7 @@ class ComfyUIHub(Star):
         return params['positive'], params['negative'], params['chain'], params['width'], params['height'], params['scale']
 
     @filter.command("draw", alias={'绘图', '文生图', '画图'})
-    async def draw(self, event: AstrMessageEvent):
+    async def draw(self, event: AstrMessageEvent, *args, **kwargs):
         """文生图指令，支持多种参数格式"""
         user_id = event.get_sender_id()
         current_time = time.time()
