@@ -18,6 +18,14 @@ class ComfyUIAPI:
                 if resp.status == 200:
                     result = await resp.json()
                     return result.get("prompt_id")
+                else:
+                    try:
+                        error_detail = await resp.text()
+                        from astrbot.api import logger
+                        logger.error(f"[ComfyUI] 提交任务失败，状态码: {resp.status}, 详情: {error_detail}")
+                    except:
+                        from astrbot.api import logger
+                        logger.error(f"[ComfyUI] 提交任务失败，状态码: {resp.status}")
         return None
 
     async def wait_result(self, prompt_id: str) -> Optional[bytes]:

@@ -15,7 +15,7 @@ from .text_to_image import TextToImage
 
 
 @register("astrbot_plugin_comfyui_hub", "ChooseC", "为 AstrBot 提供 ComfyUI 调用能力的插件，计划支持 ComfyUI 全功能。",
-          "1.0.5", "https://github.com/ReallyChooseC/astrbot_plugin_comfyui_hub")
+          "1.0.6", "https://github.com/ReallyChooseC/astrbot_plugin_comfyui_hub")
 class ComfyUIHub(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -166,14 +166,14 @@ class ComfyUIHub(Star):
             text = re.sub(scale_pattern, '', text, flags=re.IGNORECASE).strip()
 
         # 检查宽度参数
-        width_pattern = r'(?:宽|宽度|w|width|x)\s*[:=]?\s*(\d+)'
+        width_pattern = r'(?:\s+|^)(?:宽|宽度|w|width|x)\s*[:=]?\s*(\d+)'
         width_match = re.search(width_pattern, text, re.IGNORECASE)
         if width_match:
             params['width'] = int(width_match.group(1))
             text = re.sub(width_pattern, '', text, flags=re.IGNORECASE).strip()
 
         # 检查高度参数
-        height_pattern = r'(?:高|高度|h|height|y)\s*[:=]?\s*(\d+)'
+        height_pattern = r'(?:\s+|^)(?:高|高度|h|height|y)\s*[:=]?\s*(\d+)'
         height_match = re.search(height_pattern, text, re.IGNORECASE)
         if height_match:
             params['height'] = int(height_match.group(1))
