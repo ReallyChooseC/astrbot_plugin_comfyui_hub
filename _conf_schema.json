@@ -70,5 +70,29 @@
     "type": "string",
     "default": "resize_scale",
     "hint": "超分节点中倍率参数的字段名"
+  },
+  "openai_api_key": {
+    "description": "OpenAI API Key",
+    "type": "string",
+    "default": "",
+    "hint": "用于审查提示词的 OpenAI API Key（必填以启用 AI 审查）"
+  },
+  "openai_base_url": {
+    "description": "OpenAI Base URL",
+    "type": "string",
+    "default": "https://api.openai.com/v1",
+    "hint": "OpenAI API 的基础地址"
+  },
+  "openai_model": {
+    "description": "OpenAI Model",
+    "type": "string",
+    "default": "gpt-3.5-turbo",
+    "hint": "用于审查的模型名称"
+  },
+  "censorship_prompt": {
+    "description": "审查系统提示词",
+    "type": "string",
+    "default": "You are a content safety moderator. Check if the following image generation prompt contains explicit content including pornography, gore, grotesque, or heavy fetishism. \nPrompt: {prompt}\nReply 'VIOLATION' if it violates the policy, otherwise 'SAFE'.",
+    "hint": "AI 审查时使用的系统提示词，{prompt} 会被替换为用户输入"
   }
 }

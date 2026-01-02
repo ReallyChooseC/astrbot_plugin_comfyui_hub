@@ -12,7 +12,10 @@ from io import BytesIO
 from PIL import Image as PILImage
 from .comfyui_api import ComfyUIAPI
 from .text_to_image import TextToImage
-from .content_filter import ContentFilter
+try:
+    from openai import AsyncOpenAI
+except ImportError:
+    AsyncOpenAI = None
 
 
 @register("astrbot_plugin_comfyui_hub", "ChooseC", "为 AstrBot 提供 ComfyUI 调用能力的插件，计划支持 ComfyUI 全功能。",
@@ -68,8 +71,18 @@ class ComfyUIHub(Star):
             config.get("upscale_scale_field", "resize_scale")
         )
         
-        # 初始化高级内容过滤器
-        self.content_filter = None  # 延迟初始化，在审查模式开启时创建
+        # 初始化 OpenAI 客户端
+        self.openai_client = None
+        self.openai_model = config.get("openai_model", "gpt-3.5-turbo")
+        self.censorship_prompt = config.get("censorship_prompt", "")
+        
+        api_key = config.get("openai_api_key", "")
+        base_url = config.get("openai_base_url", "https://api.openai.com/v1")
+        
+        if api_key and AsyncOpenAI:
+            self.openai_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        elif api_key and not AsyncOpenAI:
+            logger.error("检测到 OpenAI API Key 但未安装 openai 包。请运行 pip install openai")
 
     def _load_block_data(self):
         self.block_tags = set()
@@ -142,6 +155,35 @@ class ComfyUIHub(Star):
                 json.dump(self.sent_messages, f, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Error saving block data: {e}")
+
+    async def _check_safety_with_llm(self, text: str) -> tuple:
+        """使用 OpenAI 检查文本安全"""
+        try:
+            if not self.openai_client:
+                return True, "No Client"
+
+            # 替换提示词模板
+            full_prompt = self.censorship_prompt.replace("{prompt}", text) if "{prompt}" in self.censorship_prompt else f"{self.censorship_prompt}\nPrompt: {text}"
+            
+            completion = await self.openai_client.chat.completions.create(
+                model=self.openai_model,
+                messages=[
+                    {"role": "user", "content": full_prompt}
+                ],
+                max_tokens=20,
+                temperature=0.1
+            )
+            result = completion.choices[0].message.content.strip()
+            
+            if "VIOLATION" in result.upper():
+                return False, result
+            
+            return True, ""
+            
+        except Exception as e:
+            logger.error(f"OpenAI 审查失败: {e}")
+            # 失败默认放行，避免服务不可用
+            return True, f"审查出错: {e}"
 
     def _parse_params(self, text: str) -> tuple:
         """解析用户输入的参数"""
@@ -316,63 +358,35 @@ class ComfyUIHub(Star):
         group_id = event.get_group_id()
         is_censorship_enabled = group_id and group_id in self.censored_groups
 
-        # 检查正向和反向提示词是否包含违规词（仅在审查开启时）
         if is_censorship_enabled:
-            # 初始化内容过滤器（如果还未初始化）
-            if self.content_filter is None:
-                # 传入用户自定义的 block_tags，ContentFilter 内部会自动合并默认库
-                self.content_filter = ContentFilter(self.block_tags)
-            
-            # 使用高级过滤器检查正面提示词
-            has_violation, details = self.content_filter.check_content(positive, enable_fuzzy=True)
-            
-            # 如果有负面提示词，也检查一下（虽然负面提示词包含敏感词通常是正常的）
-            # 这里主要是为了检测用户是否在负面提示词中使用了审查系统禁止的词汇
-            if has_violation:
-                violation_summary = self.content_filter.get_violation_summary(details)
-                self.blocked_users[user_id] = current_time + 120  # 2分钟封禁
-                self._save_block_data()
-                logger.info(f"审查模式检测到违规内容: {violation_summary}")
-                yield event.plain_result(f"⚠️ 您的绘图申请包含违规内容，已被智能审查系统检测。您将被禁服务 2 分钟。")
-                return
+            # 1. 本地 Block Tag 检查
+            for tag in self.block_tags:
+                if tag.lower() in positive.lower(): # 简单的子串匹配
+                     # 封禁用户
+                    self.blocked_users[user_id] = current_time + 120  # 2分钟封禁
+                    self._save_block_data()
+                    yield event.plain_result(f"⚠️ 违规：包含禁止词 '{tag}'。您将被禁服务 2 分钟。")
+                    return
 
-        # 自动补全安全提示词（仅在审查开启时）
-        if is_censorship_enabled:
-            # 定义安全提示词和审查负面词
-            safe_words = ["safe for work", "sfw", "censored"]
-            censorship_negative_words = [
-                "nsfw", "nude", "nudity", "naked", "explicit",
-                "血腥", "暴力", "猎奇", "gore", "violence", "bloody", "guro",
-                "sexual", "porn", "hentai", "ecchi", "r18", "adult"
-            ]
-            
-            # 检查正面提示词中是否包含安全词
-            has_safe_word = any(word in positive.lower() for word in safe_words)
-            if not has_safe_word:
-                positive = positive.rstrip(", ") + ", sfw, safe for work" if positive else "sfw, safe for work"
-            
-            # 构建负面提示词：添加所有审查相关的词
-            negative_lower = (negative or "").lower()
-            missing_negative_words = [word for word in censorship_negative_words if word not in negative_lower]
-            
-            if missing_negative_words:
-                negative_addition = ", ".join(missing_negative_words)
-                negative = (negative.rstrip(", ") + ", " + negative_addition) if negative else negative_addition
-            
-            # 从正面提示词中剔除与负面提示词冲突的tag
-            positive_tags = [tag.strip() for tag in re.split(r',', positive)]
-            cleaned_positive_tags = []
-            
-            for tag in positive_tags:
-                tag_lower = tag.lower()
-                # 检查是否与负面词冲突
-                is_conflict = any(neg_word in tag_lower for neg_word in censorship_negative_words)
-                if not is_conflict:
-                    cleaned_positive_tags.append(tag)
-                else:
-                    logger.info(f"审查模式：从正面提示词中移除冲突tag: {tag}")
-            
-            positive = ", ".join(cleaned_positive_tags)
+            # 2. LLM 审查 (仅在配置了 API Key 且客户端初始化成功时进行)
+            if self.openai_client:
+                is_safe, reason = await self._check_safety_with_llm(positive)
+                if not is_safe:
+                    self.blocked_users[user_id] = current_time + 120  # 2分钟封禁
+                    self._save_block_data()
+                    logger.info(f"LLM 审查拦截: {reason}")
+                    yield event.plain_result(f"⚠️ 您的绘图申请包含敏感内容（{reason}），已被AI审查系统拒绝。您将被禁服务 2 分钟。")
+                    return
+            elif self.config.get("openai_api_key"):
+                 # 如果配置了 Key 但客户端没初始化，说明可能是包没装
+                 logger.warning("审查已开启且配置了 OpenAI Key，但客户端未初始化（检查是否安装了 openai 包）")
+            # 如果没有配置 Key，则直接原样通过（跳过 LLM 审查）
+
+
+            # 自动添加 safe prompt (可选，这里保留最基本的)
+            if "sfw" not in positive.lower() and "safe" not in positive.lower():
+                positive += ", sfw, safe for work"
+
 
         if not positive:
             yield event.plain_result("请输入正面提示词")
