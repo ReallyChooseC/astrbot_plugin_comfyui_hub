@@ -12,10 +12,6 @@ from io import BytesIO
 from PIL import Image as PILImage
 from .comfyui_api import ComfyUIAPI
 from .text_to_image import TextToImage
-try:
-    from openai import AsyncOpenAI
-except ImportError:
-    AsyncOpenAI = None
 
 
 @register("astrbot_plugin_comfyui_hub", "ChooseC", "为 AstrBot 提供 ComfyUI 调用能力的插件，计划支持 ComfyUI 全功能。",
@@ -71,18 +67,9 @@ class ComfyUIHub(Star):
             config.get("upscale_scale_field", "resize_scale")
         )
         
-        # 初始化 OpenAI 客户端
-        self.openai_client = None
-        self.openai_model = config.get("openai_model", "gpt-3.5-turbo")
+        # 初始化审查设置
+        self.use_astrbot_llm = config.get("use_astrbot_llm", True)
         self.censorship_prompt = config.get("censorship_prompt", "")
-        
-        api_key = config.get("openai_api_key", "")
-        base_url = config.get("openai_base_url", "https://api.openai.com/v1")
-        
-        if api_key and AsyncOpenAI:
-            self.openai_client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        elif api_key and not AsyncOpenAI:
-            logger.error("检测到 OpenAI API Key 但未安装 openai 包。请运行 pip install openai")
 
     def _load_block_data(self):
         self.block_tags = set()
@@ -156,24 +143,31 @@ class ComfyUIHub(Star):
         except Exception as e:
             logger.error(f"Error saving block data: {e}")
 
-    async def _check_safety_with_llm(self, text: str) -> tuple:
-        """使用 OpenAI 检查文本安全"""
+    async def _check_safety_with_llm(self, event: AstrMessageEvent, text: str) -> tuple:
+        """使用 AstrBot 内置 LLM 检查文本安全"""
         try:
-            if not self.openai_client:
-                return True, "No Client"
+            if not self.use_astrbot_llm:
+                return True, "Disabled"
+
+            # 获取当前会话使用的模型 ID
+            umo = event.unified_msg_origin
+            provider_id = await self.context.get_current_chat_provider_id(umo=umo)
+            if not provider_id:
+                return True, "No Provider"
 
             # 替换提示词模板
             full_prompt = self.censorship_prompt.replace("{prompt}", text) if "{prompt}" in self.censorship_prompt else f"{self.censorship_prompt}\nPrompt: {text}"
             
-            completion = await self.openai_client.chat.completions.create(
-                model=self.openai_model,
-                messages=[
-                    {"role": "user", "content": full_prompt}
-                ],
-                max_tokens=20,
-                temperature=0.1
+            # 使用 AstrBot 内置 LLM 生成
+            llm_resp = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                prompt=full_prompt
             )
-            result = completion.choices[0].message.content.strip()
+
+            if not llm_resp or not llm_resp.completion_text:
+                return True, "No Response"
+                
+            result = llm_resp.completion_text.strip()
             
             if "VIOLATION" in result.upper():
                 return False, result
@@ -181,7 +175,7 @@ class ComfyUIHub(Star):
             return True, ""
             
         except Exception as e:
-            logger.error(f"OpenAI 审查失败: {e}")
+            logger.error(f"AstrBot LLM 审查失败: {e}")
             # 失败默认放行，避免服务不可用
             return True, f"审查出错: {e}"
 
@@ -368,19 +362,16 @@ class ComfyUIHub(Star):
                     yield event.plain_result(f"⚠️ 违规：包含禁止词 '{tag}'。您将被禁服务 2 分钟。")
                     return
 
-            # 2. LLM 审查 (仅在配置了 API Key 且客户端初始化成功时进行)
-            if self.openai_client:
-                is_safe, reason = await self._check_safety_with_llm(positive)
+            # 2. LLM 审查 (仅在开启了 AstrBot LLM 审查时进行)
+            if self.use_astrbot_llm:
+                is_safe, reason = await self._check_safety_with_llm(event, positive)
                 if not is_safe:
                     self.blocked_users[user_id] = current_time + 120  # 2分钟封禁
                     self._save_block_data()
                     logger.info(f"LLM 审查拦截: {reason}")
                     yield event.plain_result(f"⚠️ 您的绘图申请包含敏感内容（{reason}），已被AI审查系统拒绝。您将被禁服务 2 分钟。")
                     return
-            elif self.config.get("openai_api_key"):
-                 # 如果配置了 Key 但客户端没初始化，说明可能是包没装
-                 logger.warning("审查已开启且配置了 OpenAI Key，但客户端未初始化（检查是否安装了 openai 包）")
-            # 如果没有配置 Key，则直接原样通过（跳过 LLM 审查）
+            # 如果没有开启审查，则直接原样通过（跳过 LLM 审查）
 
 
             # 自动添加 safe prompt (可选，这里保留最基本的)

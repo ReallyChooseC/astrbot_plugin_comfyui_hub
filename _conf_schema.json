@@ -71,23 +71,11 @@
     "default": "resize_scale",
     "hint": "超分节点中倍率参数的字段名"
   },
-  "openai_api_key": {
-    "description": "OpenAI API Key",
-    "type": "string",
-    "default": "",
-    "hint": "用于审查提示词的 OpenAI API Key（必填以启用 AI 审查）"
-  },
-  "openai_base_url": {
-    "description": "OpenAI Base URL",
-    "type": "string",
-    "default": "https://api.openai.com/v1",
-    "hint": "OpenAI API 的基础地址"
-  },
-  "openai_model": {
-    "description": "OpenAI Model",
-    "type": "string",
-    "default": "gpt-3.5-turbo",
-    "hint": "用于审查的模型名称"
+  "use_astrbot_llm": {
+    "description": "使用 LLM 审查",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后将使用 LLM 进行提示词审查"
   },
   "censorship_prompt": {
     "description": "审查系统提示词",
