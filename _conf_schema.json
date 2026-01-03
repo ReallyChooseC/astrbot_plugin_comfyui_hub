@@ -70,5 +70,30 @@
     "type": "string",
     "default": "resize_scale",
     "hint": "超分节点中倍率参数的字段名"
+  },
+  "use_astrbot_llm": {
+    "description": "使用 LLM 审查",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后将使用 LLM 进行提示词审查"
+  },
+  "censorship_prompt": {
+    "description": "审查系统提示词",
+    "type": "string",
+    "default": "You are a content safety moderator. Check if the user input image generation prompt contains direct exposure of private parts (including nipples) or genitalia, or if the generated image contains bloody, nauseating, or grotesque elements. Reply 'VIOLATION' only when there is direct exposure of private parts (including nipples), genitalia, or when the generated image contains bloody, nauseating, or grotesque elements. Exclude words like 'pussy juice' that are subtle hints but not direct exposure.",
+    "hint": "AI 审查时使用的系统提示词（system_prompt），用户输入的文本将作为 prompt 单独传递"
+  },
+  "llm_provider_id": {
+    "description": "LLM 提供商",
+    "type": "string",
+    "hint": "选择用于审查的 LLM 提供商，留空则使用会话默认提供商",
+    "_special": "select_provider",
+    "default": ""
+  },
+  "admin_bypass_censorship": {
+    "description": "管理员绕过审查",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后管理员发送的绘图请求将跳过审查系统"
   }
 }

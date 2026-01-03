@@ -15,7 +15,7 @@ from .text_to_image import TextToImage
 
 
 @register("astrbot_plugin_comfyui_hub", "ChooseC", "为 AstrBot 提供 ComfyUI 调用能力的插件，计划支持 ComfyUI 全功能。",
-          "1.0.6", "https://github.com/ReallyChooseC/astrbot_plugin_comfyui_hub")
+          "1.0.7", "https://github.com/ReallyChooseC/astrbot_plugin_comfyui_hub")
 class ComfyUIHub(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -66,6 +66,12 @@ class ComfyUIHub(Star):
             config.get("upscale_node", ""),
             config.get("upscale_scale_field", "resize_scale")
         )
+
+        # 初始化审查设置
+        self.use_astrbot_llm = config.get("use_astrbot_llm", True)
+        self.censorship_prompt = config.get("censorship_prompt", "")
+        self.llm_provider_id = config.get("llm_provider_id", "")
+        self.admin_bypass_censorship = config.get("admin_bypass_censorship", True)
 
     def _load_block_data(self):
         self.block_tags = set()
@@ -138,6 +144,46 @@ class ComfyUIHub(Star):
                 json.dump(self.sent_messages, f, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Error saving block data: {e}")
+
+    async def _check_safety_with_llm(self, event: AstrMessageEvent, text: str) -> tuple:
+        """使用 AstrBot 内置 LLM 检查文本安全"""
+        try:
+            if not self.use_astrbot_llm:
+                return True, "Disabled"
+
+            # 优先使用配置的提供商 ID，否则使用当前会话的提供商
+            provider_id = self.llm_provider_id
+            if not provider_id:
+                # 如果配置中没有指定，则使用会话默认提供商
+                umo = event.unified_msg_origin
+                provider_id = await self.context.get_current_chat_provider_id(umo=umo)
+                if not provider_id:
+                    return True, "No Provider"
+
+            # 系统提示词（审查指导原则）
+            system_prompt = self.censorship_prompt
+
+            # 使用 AstrBot 内置 LLM 生成，传入系统提示词和用户输入
+            llm_resp = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                prompt=text,
+                system_prompt=system_prompt
+            )
+
+            if not llm_resp or not llm_resp.completion_text:
+                return True, "No Response"
+                
+            result = llm_resp.completion_text.strip()
+            
+            if "VIOLATION" in result.upper():
+                return False, result
+            
+            return True, ""
+            
+        except Exception as e:
+            logger.error(f"AstrBot LLM 审查失败: {e}")
+            # 失败默认放行，避免服务不可用
+            return True, f"审查出错: {e}"
 
     def _parse_params(self, text: str) -> tuple:
         """解析用户输入的参数"""
@@ -312,26 +358,36 @@ class ComfyUIHub(Star):
         group_id = event.get_group_id()
         is_censorship_enabled = group_id and group_id in self.censored_groups
 
-        # 检查正向和反向提示词是否包含违规词（仅在审查开启时）
-        if is_censorship_enabled:
-            found_tags = []
-            for tag in self.block_tags:
-                if tag.lower() in positive.lower() or (negative and tag.lower() in negative.lower()):
-                    found_tags.append(tag)
-            
-            if found_tags:
-                self.blocked_users[user_id] = current_time + 120  # 2分钟封禁
-                self._save_block_data()
-                yield event.plain_result(f"⚠️ 您的绘图申请包含违规词: {', '.join(found_tags)}。您将被禁服务 2 分钟。")
-                return
+        # 检查是否为管理员且开启了管理员绕过选项
+        is_admin = event.is_admin()
+        should_bypass_censorship = is_admin and self.admin_bypass_censorship
 
-        # 自动补全安全提示词（仅在审查开启时）
-        if is_censorship_enabled:
-            if not any(word in positive.lower() for word in ["safe for work", "sfw", "cencored", "censored"]):
-                positive = positive.rstrip(", ") + ", sfw" if positive else "sfw"
-            
-            if "nsfw" not in (negative or "").lower():
-                negative = (negative.rstrip(", ") + ", nsfw") if negative else "nsfw"
+        if is_censorship_enabled and not should_bypass_censorship:
+            # 1. 本地 Block Tag 检查
+            for tag in self.block_tags:
+                if tag.lower() in positive.lower(): # 简单的子串匹配
+                     # 封禁用户
+                    self.blocked_users[user_id] = current_time + 120  # 2分钟封禁
+                    self._save_block_data()
+                    yield event.plain_result(f"⚠️ 违规：包含禁止词 '{tag}'。您将被禁服务 2 分钟。")
+                    return
+
+            # 2. LLM 审查 (仅在开启了 AstrBot LLM 审查时进行)
+            if self.use_astrbot_llm:
+                is_safe, reason = await self._check_safety_with_llm(event, positive)
+                if not is_safe:
+                    self.blocked_users[user_id] = current_time + 120  # 2分钟封禁
+                    self._save_block_data()
+                    logger.info(f"LLM 审查拦截: {reason}")
+                    yield event.plain_result(f"⚠️ 您的绘图申请包含敏感内容（{reason}），已被AI审查系统拒绝。您将被禁服务 2 分钟。")
+                    return
+            # 如果没有开启审查，则直接原样通过（跳过 LLM 审查）
+
+
+            # 自动添加 safe prompt (可选，这里保留最基本的)
+            if "sfw" not in positive.lower() and "safe" not in positive.lower():
+                positive += ", sfw, safe for work"
+
 
         if not positive:
             yield event.plain_result("请输入正面提示词")
