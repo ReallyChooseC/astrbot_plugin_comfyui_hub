@@ -1,4 +1,10 @@
 {
+  "enable_txt2img": {
+    "description": "启用文生图功能",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后允许使用文生图功能"
+  },
   "server_url": {
     "description": "ComfyUI 服务器地址",
     "type": "string",
@@ -27,7 +33,7 @@
     "description": "文生图工作流文件名",
     "type": "string",
     "default": "example_text2img.json",
-    "hint": "工作流文件名，文件需放在 plugin_data/astrbot_plugin_comfyui_hub/workflows/ 目录下"
+    "hint": "文生图工作流文件名，文件需放在 plugin_data/astrbot_plugin_comfyui_hub/workflows/ 目录下，留空或文件不存在则使用默认example_text2img.json"
   },
   "txt2img_positive_node": {
     "description": "文生图正面提示词节点ID",
@@ -80,7 +86,7 @@
   "censorship_prompt": {
     "description": "审查系统提示词",
     "type": "string",
-    "default": "You are a content safety moderator. Check if the user input image generation prompt contains direct exposure of private parts (including nipples) or genitalia, or if the generated image contains bloody, nauseating, or grotesque elements. Reply 'VIOLATION' only when there is direct exposure of private parts (including nipples), genitalia, or when the generated image contains bloody, nauseating, or grotesque elements. Exclude words like 'pussy juice' that are subtle hints but not direct exposure.",
+    "default": "你是一个内容安全审核员。你需要判断用户输入的图片生成提示词是否包含直接暴露隐私部位（包括乳头）或生殖器官的内容，或者生成的图片是否包含血腥、恶心、恐怖元素。\n\n规则：\n1. 只有直接暴露隐私部位（包括乳头）、生殖器官，或者生成的图片包含血腥、恶心、恐怖元素时才判定为违规\n2. 不包含上述内容的均判定为不违规\n3. 对于隐晦暗示（如 'pussy juice' 等词语）但不直接暴露的内容，判定为不违规\n\n请回答 yes 或 no（小写，只回答一个单词）：\n- 如果违规（包含直接暴露隐私部位、生殖器官、血腥、恶心、恐怖元素），回答 yes\n- 如果不违规，回答 no",
     "hint": "AI 审查时使用的系统提示词（system_prompt），用户输入的文本将作为 prompt 单独传递"
   },
   "llm_provider_id": {
@@ -95,5 +101,29 @@
     "type": "bool",
     "default": true,
     "hint": "开启后管理员发送的绘图请求将跳过审查系统"
+  },
+  "enable_tagger": {
+    "description": "启用图片标签识别功能",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后允许使用图片标签识别功能"
+  },
+  "tagger_workflow": {
+    "description": "Tagger工作流文件名",
+    "type": "string",
+    "default": "",
+    "hint": "图片标签识别工作流文件名，文件需放在 plugin_data/astrbot_plugin_comfyui_hub/workflows/ 目录下，留空则使用默认example_tagger.json"
+  },
+  "tagger_input_node": {
+    "description": "Tagger输入节点ID",
+    "type": "string",
+    "default": "",
+    "hint": "Tagger工作流中LoadImage节点的编号，留空则自动查找"
+  },
+  "tagger_output_node": {
+    "description": "Tagger输出节点ID",
+    "type": "string",
+    "default": "",
+    "hint": "Tagger工作流中文本输出的节点编号"
   }
 }

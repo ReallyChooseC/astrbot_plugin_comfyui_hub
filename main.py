@@ -1,16 +1,18 @@
-from astrbot.api.event import filter, AstrMessageEvent, MessageChain
-from astrbot.api.event.filter import PermissionType
-from astrbot.api.star import Context, Star, register
-from astrbot.api import AstrBotConfig, logger
-from astrbot.api.message_components import Node, Image, Reply
-from pathlib import Path
+import json
+import re
 import shutil
 import time
-import re
-import json
 from io import BytesIO
+from pathlib import Path
+
 from PIL import Image as PILImage
+from astrbot.api import AstrBotConfig, logger
+from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.message_components import Node, Image, Reply
+from astrbot.api.star import Context, Star, register
+
 from .comfyui_api import ComfyUIAPI
+from .image_to_text import ImageToText
 from .text_to_image import TextToImage
 
 
@@ -42,30 +44,53 @@ class ComfyUIHub(Star):
         self.sent_messages_file = data_dir / "sent_messages.json"
         self._load_block_data()
 
-        workflow_filename = config.get("txt2img_workflow", "example_text2img.json")
-        workflow_path = workflow_dir / workflow_filename
-
-        if not workflow_path.exists():
-            workflow_path = workflow_dir / "example_text2img.json"
-            example_path = plugin_dir / "example_text2img.json"
-            if example_path.exists() and not workflow_path.exists():
-                shutil.copy(example_path, workflow_path)
-
+        # 初始化文生图设置
         server_url = config.get("server_url", "http://127.0.0.1:8188")
         timeout = config.get("timeout", 300)
-
         self.api = ComfyUIAPI(server_url, timeout)
-        self.txt2img = TextToImage(
-            self.api,
-            str(workflow_path),
-            config.get("txt2img_positive_node", "6"),
-            config.get("txt2img_negative_node", "7"),
-            config.get("resolution_node", ""),
-            config.get("resolution_width_field", "width"),
-            config.get("resolution_height_field", "height"),
-            config.get("upscale_node", ""),
-            config.get("upscale_scale_field", "resize_scale")
-        )
+
+        self.txt2img = None
+        if config.get("enable_txt2img", True):
+            workflow_filename = config.get("txt2img_workflow", "example_text2img.json")
+            workflow_path = workflow_dir / workflow_filename
+
+            if not workflow_path.exists():
+                workflow_path = workflow_dir / "example_text2img.json"
+                example_path = plugin_dir / "example_text2img.json"
+                if example_path.exists() and not workflow_path.exists():
+                    shutil.copy(example_path, workflow_path)
+
+            self.txt2img = TextToImage(
+                self.api,
+                str(workflow_path),
+                config.get("txt2img_positive_node", "6"),
+                config.get("txt2img_negative_node", "7"),
+                config.get("resolution_node", ""),
+                config.get("resolution_width_field", "width"),
+                config.get("resolution_height_field", "height"),
+                config.get("upscale_node", ""),
+                config.get("upscale_scale_field", "resize_scale")
+            )
+
+        # 初始化 tagger 设置
+        self.img2txt = None
+        if config.get("enable_tagger", True):
+            tagger_workflow_filename = config.get("tagger_workflow", "")
+            tagger_workflow_path = workflow_dir / tagger_workflow_filename if tagger_workflow_filename else None
+
+            if not tagger_workflow_path or not tagger_workflow_path.exists():
+                tagger_workflow_path = workflow_dir / "example_tagger.json"
+                example_tagger_path = plugin_dir / "example_tagger.json"
+                if example_tagger_path.exists() and not tagger_workflow_path.exists():
+                    shutil.copy(example_tagger_path, tagger_workflow_path)
+
+            if tagger_workflow_path and tagger_workflow_path.exists():
+                self.img2txt = ImageToText(
+                    self.api,
+                    str(tagger_workflow_path),
+                    config.get("tagger_output_node", ""),
+                    config.get("tagger_input_node", "")
+                )
 
         # 初始化审查设置
         self.use_astrbot_llm = config.get("use_astrbot_llm", True)
@@ -175,9 +200,17 @@ class ComfyUIHub(Star):
                 
             result = llm_resp.completion_text.strip()
             
-            if "VIOLATION" in result.upper():
+            # 使用严格的正则表达式匹配：只匹配独立的 "yes"（大小写不敏感）
+            # 确保不会误判 "yes" 作为单词的一部分（如 "yesterday"）
+            # 同时也支持中文的 "是" 作为违规的判定
+            is_violation = bool(re.search(r'\byes\b', result, re.IGNORECASE) or
+                              bool(re.search(r'违规', result)) or
+                              bool(re.search(r'\b是\b', result, flags=re.IGNORECASE)))
+            
+            if is_violation:
                 return False, result
             
+            # 默认放行（任何其他回答都视为不违规）
             return True, ""
             
         except Exception as e:
@@ -254,6 +287,11 @@ class ComfyUIHub(Star):
     @filter.command("draw", alias={'绘图', '文生图', '画图'})
     async def draw(self, event: AstrMessageEvent):
         """文生图指令，支持多种参数格式"""
+        # 检查文生图功能是否开启
+        if not self.txt2img:
+            yield event.plain_result("⚠️ 文生图功能未开启")
+            return
+
         user_id = event.get_sender_id()
         current_time = time.time()
 
@@ -663,3 +701,113 @@ class ComfyUIHub(Star):
             event.stop_event()
         except Exception as e:
             logger.error(f"撤回失败: {e}")
+
+    @filter.command("tagger", alias={'tag', '标签'})
+    async def tagger(self, event: AstrMessageEvent):
+        """图片标签识别指令，输入图片输出文本标签"""
+        # 检查 tagger 功能是否开启
+        if not self.img2txt:
+            yield event.plain_result("⚠️ 图片标签识别功能未开启")
+            return
+
+        # 获取消息中的图片
+        from astrbot.api.message_components import Image as ImageComponent, Reply as ReplyComponent
+        chain = event.get_messages()
+        image_data = None
+
+        for msg in chain:
+            # 情况1：处理 Reply 消息中的图片
+            if isinstance(msg, ReplyComponent) and msg.chain:
+                for chain_msg in msg.chain:
+                    if isinstance(chain_msg, ImageComponent):
+                        image_data = await self._get_image_data(chain_msg)
+                        if image_data:
+                            break
+            # 情况2：处理直接的图片消息
+            elif isinstance(msg, ImageComponent):
+                image_data = await self._get_image_data(msg)
+            
+            if image_data:
+                break
+
+        if not image_data:
+            yield event.plain_result("请发送或回复一张图片")
+            return
+
+        logger.info(f"成功获取图片数据，大小: {len(image_data)} 字节")
+
+        # 发送"正在识别图片..."消息
+        text_msg_id = None
+        group_id = event.get_group_id()
+        is_aiocqhttp = event.get_platform_name() == "aiocqhttp"
+
+        if is_aiocqhttp and group_id:
+            try:
+                client = event.bot
+                result = await client.api.call_action(
+                    "send_group_msg",
+                    group_id=int(group_id),
+                    message="正在识别图片标签..."
+                )
+                if result:
+                    if isinstance(result, dict):
+                        if 'data' in result and result['data']:
+                            text_msg_id = result['data'].get('message_id')
+                        elif 'message_id' in result:
+                            text_msg_id = result['message_id']
+                    elif isinstance(result, (int, str)):
+                        text_msg_id = str(result)
+            except Exception as e:
+                logger.error(f"发送文字消息失败: {e}")
+
+        # 生成标签
+        result_text = await self.img2txt.generate(image_data)
+        logger.info(f"标签识别结果: {result_text}")
+
+        if result_text:
+            # 格式化输出标签（只替换下划线为空格）
+            formatted_tags = result_text.replace('_', ' ')
+            logger.info(f"格式化后的标签: {formatted_tags}")
+            yield event.plain_result(f"【标签】\n{formatted_tags}")
+
+            # 记录发送的消息ID（带时间戳）
+            if group_id:
+                group_id_str = str(group_id)
+                if group_id_str not in self.sent_messages:
+                    self.sent_messages[group_id_str] = []
+                if text_msg_id:
+                    self.sent_messages[group_id_str].append({
+                        'message_id': str(text_msg_id),
+                        'timestamp': time.time(),
+                        'user_id': str(event.get_sender_id())
+                    })
+                self._save_block_data()
+            # 停止事件传播，避免触发 LLM
+            event.stop_event()
+        else:
+            yield event.plain_result("识别失败")
+
+    async def _get_image_data(self, image_component):
+        """从 Image 组件获取图片数据"""
+        import aiohttp
+        try:
+            # 尝试通过 URL 下载
+            if hasattr(image_component, 'url') and image_component.url:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(image_component.url) as resp:
+                        if resp.status == 200:
+                            return await resp.read()
+        except Exception as e:
+            logger.error(f"通过URL获取图片失败: {e}")
+
+        try:
+            # 尝试转换为文件路径并读取
+            if hasattr(image_component, 'convert_to_file_path') and callable(image_component.convert_to_file_path):
+                file_path = await image_component.convert_to_file_path()
+                if file_path and Path(file_path).exists():
+                    with open(file_path, 'rb') as f:
+                        return f.read()
+        except Exception as e:
+            logger.error(f"通过文件路径获取图片失败: {e}")
+
+        return None
