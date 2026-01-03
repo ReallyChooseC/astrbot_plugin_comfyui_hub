@@ -39,6 +39,7 @@ class ComfyUIHub(Star):
         self.temp_dir.mkdir(exist_ok=True)
 
         self.block_tags_file = data_dir / "block_tags.json"
+        self.output_block_tags_file = data_dir / "output_block_tags.json"
         self.blocked_users_file = data_dir / "blocked_users.json"
         self.censorship_config_file = data_dir / "censorship_config.json"
         self.sent_messages_file = data_dir / "sent_messages.json"
@@ -97,13 +98,26 @@ class ComfyUIHub(Star):
         self.censorship_prompt = config.get("censorship_prompt", "")
         self.llm_provider_id = config.get("llm_provider_id", "")
         self.admin_bypass_censorship = config.get("admin_bypass_censorship", True)
+        
+        # 输出图片审查设置
+        self.enable_output_censorship = config.get("enable_output_censorship", False)
+        self.output_censorship_use_llm = config.get("output_censorship_use_llm", True)
 
     def _load_block_data(self):
         self.block_tags = set()
+        self.output_block_tags = set()
         self.blocked_users = {}
         self.censored_groups = set()  # 存储开启审查的群组ID
         self.sent_messages = {}  # 存储插件发送的消息ID {group_id: [{message_id: timestamp}]}
         self.message_cache_ttl = 120  # 消息ID缓存时间（秒），默认2分钟
+
+        if self.output_block_tags_file.exists():
+            try:
+                with open(self.output_block_tags_file, "r", encoding='utf-8') as f:
+                    self.output_block_tags = set(json.load(f))
+            except Exception as e:
+                logger.error(f"Error loading output block tags: {e}")
+
         
         if self.block_tags_file.exists():
             try:
@@ -159,6 +173,8 @@ class ComfyUIHub(Star):
         try:
             with open(self.block_tags_file, "w", encoding='utf-8') as f:
                 json.dump(list(self.block_tags), f, ensure_ascii=False)
+            with open(self.output_block_tags_file, "w", encoding='utf-8') as f:
+                json.dump(list(self.output_block_tags), f, ensure_ascii=False)
             with open(self.blocked_users_file, "w", encoding='utf-8') as f:
                 json.dump(self.blocked_users, f, ensure_ascii=False)
             with open(self.censorship_config_file, "w", encoding='utf-8') as f:
@@ -170,10 +186,15 @@ class ComfyUIHub(Star):
         except Exception as e:
             logger.error(f"Error saving block data: {e}")
 
-    async def _check_safety_with_llm(self, event: AstrMessageEvent, text: str) -> tuple:
+    async def _check_safety_with_llm(self, event: AstrMessageEvent, text: str, is_output_check: bool = False) -> tuple:
         """使用 AstrBot 内置 LLM 检查文本安全"""
         try:
-            if not self.use_astrbot_llm:
+            # 检查输出审查时，根据配置决定使用 LLM
+            if is_output_check and not self.output_censorship_use_llm:
+                return True, "LLM Disabled"
+            
+            # 检查输入审查时，根据配置决定使用 LLM
+            if not is_output_check and not self.use_astrbot_llm:
                 return True, "Disabled"
 
             # 优先使用配置的提供商 ID，否则使用当前会话的提供商
@@ -284,6 +305,17 @@ class ComfyUIHub(Star):
 
         return params['positive'], params['negative'], params['chain'], params['width'], params['height'], params['scale']
 
+    def _check_simple_tags(self, tags_text: str) -> tuple:
+        """使用简单关键词检查标签是否违规"""
+        tags = [tag.strip().lower() for tag in tags_text.split(',')]
+
+        for tag in tags:
+            for keyword in self.output_block_tags:
+                if keyword.lower() in tag:
+                    return False, f"包含违规标签: {tag}"
+
+        return True, ""
+
     @filter.command("draw", alias={'绘图', '文生图', '画图'})
     async def draw(self, event: AstrMessageEvent):
         """文生图指令，支持多种参数格式"""
@@ -362,7 +394,40 @@ class ComfyUIHub(Star):
                 self._save_block_data()
                 yield event.plain_result(f"✅ 已成功添加违规词: {', '.join(new_tags)}")
                 return
-    
+
+            if text.startswith('$add_output_block_tag'):
+                tags_part = text[len('$add_output_block_tag'):].strip()
+                raw_tags = re.split(r',|\[|\]', tags_part)
+                new_tags = [t.strip() for t in raw_tags if t.strip()]
+
+                if not new_tags:
+                    yield event.plain_result("用法: #draw $add_output_block_tag tag1,tag2")
+                    return
+
+                self.output_block_tags.update(new_tags)
+                self._save_block_data()
+                yield event.plain_result(f"✅ 已添加输出违规词: {', '.join(new_tags)}")
+                return
+
+            if text.startswith('$remove_output_block_tag'):
+                tags_part = text[len('$remove_output_block_tag'):].strip()
+                raw_tags = re.split(r',|\[|\]', tags_part)
+                rem_tags = [t.strip() for t in raw_tags if t.strip()]
+
+                if not rem_tags:
+                    yield event.plain_result("用法: #draw $remove_output_block_tag tag1,tag2")
+                    return
+
+                removed = [t for t in rem_tags if t in self.output_block_tags]
+                self.output_block_tags -= set(rem_tags)
+                self._save_block_data()
+
+                if removed:
+                    yield event.plain_result(f"✅ 已移除输出违规词: {', '.join(removed)}")
+                else:
+                    yield event.plain_result("⚠️ 未找到指定的输出违规词")
+                return
+
             if text.startswith('$remove_block_tag'):
                 tags_part = text[len('$remove_block_tag'):].strip()
                 raw_tags = re.split(r',|\[|\]', tags_part)
@@ -461,6 +526,35 @@ class ComfyUIHub(Star):
         image_data = await self.txt2img.generate(positive, negative, width, height, scale)
 
         if image_data:
+            # 输出图片审查
+            if is_censorship_enabled and not should_bypass_censorship and self.enable_output_censorship and self.img2txt:
+                yield event.plain_result("正在审查生成的图片...")
+                
+                # 使用 tagger 获取图片标签
+                tags_text = await self.img2txt.generate(image_data)
+                
+                if tags_text:
+                    logger.info(f"输出图片标签: {tags_text}")
+
+                    # 检查方式1: 使用 LLM 审查
+                    if self.output_censorship_use_llm:
+                        is_safe, reason = await self._check_safety_with_llm(event, tags_text, is_output_check=True)
+                        if not is_safe:
+                            logger.info(f"输出图片 LLM 审查拦截: {reason}")
+                            yield event.plain_result(
+                                f"⚠️ 生成的图片包含敏感内容（{reason}），已被AI审查系统拒绝。图片已销毁。")
+                            return
+
+                    # 检查方式2: 使用简单关键词审查
+                    is_safe_simple, reason_simple = self._check_simple_tags(tags_text)
+                    if not is_safe_simple:
+                        logger.info(f"输出图片关键词审查拦截: {reason_simple}")
+                        yield event.plain_result(
+                            f"⚠️ 生成的图片包含敏感内容（{reason_simple}），已被审查系统拒绝。图片已销毁。")
+                        return
+                    
+                    logger.info("输出图片审查通过")
+            
             temp_file = self.temp_dir / f"{int(time.time())}.png"
             with open(temp_file, "wb") as f:
                 f.write(image_data)

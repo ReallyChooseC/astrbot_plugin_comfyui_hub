@@ -125,5 +125,17 @@
     "type": "string",
     "default": "",
     "hint": "Tagger工作流中文本输出的节点编号"
+  },
+  "enable_output_censorship": {
+    "description": "启用输出图片审查",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后将对生成的图片进行审查，使用tagger获取图片标签并进行安全检查"
+  },
+  "output_censorship_use_llm": {
+    "description": "输出审查使用LLM",
+    "type": "bool",
+    "default": true,
+    "hint": "输出审查时是否使用LLM进行智能判断。关闭则仅使用简单关键词匹配"
   }
 }
