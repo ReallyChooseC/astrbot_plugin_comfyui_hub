@@ -94,11 +94,12 @@ class ComfyUIHub(Star):
                 )
 
         # 初始化审查设置
-        self.use_astrbot_llm = config.get("use_astrbot_llm", True)
+        self.enable_input_censorship = config.get("enable_input_censorship", True)
+        self.input_censorship_use_llm = config.get("input_censorship_use_llm", True)
         self.censorship_prompt = config.get("censorship_prompt", "")
         self.llm_provider_id = config.get("llm_provider_id", "")
         self.admin_bypass_censorship = config.get("admin_bypass_censorship", True)
-        
+
         # 输出图片审查设置
         self.enable_output_censorship = config.get("enable_output_censorship", False)
         self.output_censorship_use_llm = config.get("output_censorship_use_llm", True)
@@ -118,21 +119,21 @@ class ComfyUIHub(Star):
             except Exception as e:
                 logger.error(f"Error loading output block tags: {e}")
 
-        
+
         if self.block_tags_file.exists():
             try:
                 with open(self.block_tags_file, "r", encoding='utf-8') as f:
                     self.block_tags = set(json.load(f))
             except Exception as e:
                 logger.error(f"Error loading block tags: {e}")
-                
+
         if self.blocked_users_file.exists():
             try:
                 with open(self.blocked_users_file, "r", encoding='utf-8') as f:
                     self.blocked_users = json.load(f)
             except Exception as e:
                 logger.error(f"Error loading blocked users: {e}")
-                
+
         if self.censorship_config_file.exists():
             try:
                 with open(self.censorship_config_file, "r", encoding='utf-8') as f:
@@ -142,7 +143,7 @@ class ComfyUIHub(Star):
                     self.censored_groups = set(config.get("groups", []))
             except Exception as e:
                 logger.error(f"Error loading censorship config: {e}")
-                
+
         if self.sent_messages_file.exists():
             try:
                 with open(self.sent_messages_file, "r", encoding='utf-8') as f:
@@ -189,27 +190,21 @@ class ComfyUIHub(Star):
     async def _check_safety_with_llm(self, event: AstrMessageEvent, text: str, is_output_check: bool = False) -> tuple:
         """使用 AstrBot 内置 LLM 检查文本安全"""
         try:
-            # 检查输出审查时，根据配置决定使用 LLM
             if is_output_check and not self.output_censorship_use_llm:
                 return True, "LLM Disabled"
-            
-            # 检查输入审查时，根据配置决定使用 LLM
-            if not is_output_check and not self.use_astrbot_llm:
-                return True, "Disabled"
 
-            # 优先使用配置的提供商 ID，否则使用当前会话的提供商
+            if not is_output_check and not self.input_censorship_use_llm:
+                return True, "LLM Disabled"
+
             provider_id = self.llm_provider_id
             if not provider_id:
-                # 如果配置中没有指定，则使用会话默认提供商
                 umo = event.unified_msg_origin
                 provider_id = await self.context.get_current_chat_provider_id(umo=umo)
                 if not provider_id:
                     return True, "No Provider"
 
-            # 系统提示词（审查指导原则）
             system_prompt = self.censorship_prompt
 
-            # 使用 AstrBot 内置 LLM 生成，传入系统提示词和用户输入
             llm_resp = await self.context.llm_generate(
                 chat_provider_id=provider_id,
                 prompt=text,
@@ -218,25 +213,30 @@ class ComfyUIHub(Star):
 
             if not llm_resp or not llm_resp.completion_text:
                 return True, "No Response"
-                
+
             result = llm_resp.completion_text.strip()
-            
-            # 使用严格的正则表达式匹配：只匹配独立的 "yes"（大小写不敏感）
-            # 确保不会误判 "yes" 作为单词的一部分（如 "yesterday"）
-            # 同时也支持中文的 "是" 作为违规的判定
-            is_violation = bool(re.search(r'\byes\b', result, re.IGNORECASE) or
-                              bool(re.search(r'违规', result)) or
-                              bool(re.search(r'\b是\b', result, flags=re.IGNORECASE)))
-            
+
+            check_type = "输出" if is_output_check else "输入"
+            logger.info(f"[{check_type}审查] LLM原始响应: {result}")
+
+            is_violation = bool(
+                re.search(r'\byes\b', result, re.IGNORECASE) or
+                re.search(r'\bviolation\b', result, re.IGNORECASE) or
+                re.search(r'\bnsfw\b', result, re.IGNORECASE) or
+                re.search(r'违规', result) or
+                re.search(r'不安全', result) or
+                re.search(r'\b是\b', result)
+            )
+
+            logger.info(f"[{check_type}审查] 判定结果: {'违规' if is_violation else '通过'}")
+
             if is_violation:
-                return False, result
-            
-            # 默认放行（任何其他回答都视为不违规）
+                return False, "AI审查拦截"
+
             return True, ""
-            
+
         except Exception as e:
             logger.error(f"AstrBot LLM 审查失败: {e}")
-            # 失败默认放行，避免服务不可用
             return True, f"审查出错: {e}"
 
     def _parse_params(self, text: str) -> tuple:
@@ -312,7 +312,7 @@ class ComfyUIHub(Star):
         for tag in tags:
             for keyword in self.output_block_tags:
                 if keyword.lower() in tag:
-                    return False, f"包含违规标签: {tag}"
+                    return False, f"检测到敏感内容 '{keyword}'"
 
         return True, ""
 
@@ -357,39 +357,39 @@ class ComfyUIHub(Star):
             if not event.is_admin():
                 yield event.plain_result("❌ 仅管理员可执行此操作。")
                 return
-            
+
             if text.startswith('$enable_censorship'):
                 group_id = event.get_group_id()
                 if not group_id:
                     yield event.plain_result("⚠️ 此命令仅支持在群组中使用。")
                     return
-                
+
                 self.censored_groups.add(group_id)
                 self._save_block_data()
                 yield event.plain_result(f"✅ 已在当前群组开启审查功能。")
                 return
-            
+
             if text.startswith('$disable_censorship'):
                 group_id = event.get_group_id()
                 if not group_id:
                     yield event.plain_result("⚠️ 此命令仅支持在群组中使用。")
                     return
-                
+
                 if group_id in self.censored_groups:
                     self.censored_groups.remove(group_id)
                     self._save_block_data()
                 yield event.plain_result(f"✅ 已在当前群组关闭审查功能。")
                 return
-            
+
             if text.startswith('$add_block_tag'):
                 tags_part = text[len('$add_block_tag'):].strip()
                 raw_tags = re.split(r',|\[|\]', tags_part)
                 new_tags = [t.strip() for t in raw_tags if t.strip()]
-                
+
                 if not new_tags:
                     yield event.plain_result("用法: #draw $add_block_tag tag1,tag2 或 [tag1] [tag2]")
                     return
-                
+
                 self.block_tags.update(new_tags)
                 self._save_block_data()
                 yield event.plain_result(f"✅ 已成功添加违规词: {', '.join(new_tags)}")
@@ -432,17 +432,17 @@ class ComfyUIHub(Star):
                 tags_part = text[len('$remove_block_tag'):].strip()
                 raw_tags = re.split(r',|\[|\]', tags_part)
                 rem_tags = [t.strip() for t in raw_tags if t.strip()]
-                
+
                 if not rem_tags:
                     yield event.plain_result("用法: #draw $remove_block_tag tag1,tag2 或 [tag1] [tag2]")
                     return
-                
+
                 removed = []
                 for t in rem_tags:
                     if t in self.block_tags:
                         self.block_tags.remove(t)
                         removed.append(t)
-                
+
                 self._save_block_data()
                 if removed:
                     yield event.plain_result(f"✅ 已成功移除违规词: {', '.join(removed)}")
@@ -465,29 +465,26 @@ class ComfyUIHub(Star):
         is_admin = event.is_admin()
         should_bypass_censorship = is_admin and self.admin_bypass_censorship
 
-        if is_censorship_enabled and not should_bypass_censorship:
-            # 1. 本地 Block Tag 检查
+        if is_censorship_enabled and not should_bypass_censorship and self.enable_input_censorship:
+            # 1. 本地 Block Tag 检查（始终执行）
             for tag in self.block_tags:
-                if tag.lower() in positive.lower(): # 简单的子串匹配
-                     # 封禁用户
-                    self.blocked_users[user_id] = current_time + 120  # 2分钟封禁
+                if tag.lower() in positive.lower():
+                    self.blocked_users[user_id] = current_time + 120
                     self._save_block_data()
-                    yield event.plain_result(f"⚠️ 违规：包含禁止词 '{tag}'。您将被禁服务 2 分钟。")
+                    yield event.plain_result(f"⚠️ 违规：检测到敏感词 '{tag}'。您将被禁服务 2 分钟。")
                     return
 
-            # 2. LLM 审查 (仅在开启了 AstrBot LLM 审查时进行)
-            if self.use_astrbot_llm:
+            # 2. LLM 审查
+            if self.input_censorship_use_llm:
                 is_safe, reason = await self._check_safety_with_llm(event, positive)
                 if not is_safe:
-                    self.blocked_users[user_id] = current_time + 120  # 2分钟封禁
+                    self.blocked_users[user_id] = current_time + 120
                     self._save_block_data()
-                    logger.info(f"LLM 审查拦截: {reason}")
-                    yield event.plain_result(f"⚠️ 您的绘图申请包含敏感内容（{reason}），已被AI审查系统拒绝。您将被禁服务 2 分钟。")
+                    logger.info(f"LLM 审查拦截")
+                    yield event.plain_result(f"⚠️ 您的绘图申请包含敏感内容，已被AI审查系统拒绝。您将被禁服务 2 分钟。")
                     return
-            # 如果没有开启审查，则直接原样通过（跳过 LLM 审查）
 
-
-            # 自动添加 safe prompt (可选，这里保留最基本的)
+            # 自动添加 safe prompt
             if "sfw" not in positive.lower() and "safe" not in positive.lower():
                 positive += ", sfw, safe for work"
 
@@ -528,33 +525,29 @@ class ComfyUIHub(Star):
         if image_data:
             # 输出图片审查
             if is_censorship_enabled and not should_bypass_censorship and self.enable_output_censorship and self.img2txt:
-                yield event.plain_result("正在审查生成的图片...")
-                
                 # 使用 tagger 获取图片标签
                 tags_text = await self.img2txt.generate(image_data)
-                
+
                 if tags_text:
                     logger.info(f"输出图片标签: {tags_text}")
 
-                    # 检查方式1: 使用 LLM 审查
-                    if self.output_censorship_use_llm:
-                        is_safe, reason = await self._check_safety_with_llm(event, tags_text, is_output_check=True)
-                        if not is_safe:
-                            logger.info(f"输出图片 LLM 审查拦截: {reason}")
-                            yield event.plain_result(
-                                f"⚠️ 生成的图片包含敏感内容（{reason}），已被AI审查系统拒绝。图片已销毁。")
-                            return
-
-                    # 检查方式2: 使用简单关键词审查
+                    # 检查方式1: 使用简单关键词审查（始终执行）
                     is_safe_simple, reason_simple = self._check_simple_tags(tags_text)
                     if not is_safe_simple:
                         logger.info(f"输出图片关键词审查拦截: {reason_simple}")
-                        yield event.plain_result(
-                            f"⚠️ 生成的图片包含敏感内容（{reason_simple}），已被审查系统拒绝。图片已销毁。")
+                        yield event.plain_result(f"⚠️ 生成的图片{reason_simple}，已被审查系统拒绝。")
                         return
-                    
+
+                    # 检查方式2: 使用 LLM 审查
+                    if self.output_censorship_use_llm:
+                        is_safe, reason = await self._check_safety_with_llm(event, tags_text, is_output_check=True)
+                        if not is_safe:
+                            logger.info(f"输出图片 LLM 审查拦截")
+                            yield event.plain_result(f"⚠️ 生成的图片包含敏感内容，已被AI审查系统拒绝。")
+                            return
+
                     logger.info("输出图片审查通过")
-            
+
             temp_file = self.temp_dir / f"{int(time.time())}.png"
             with open(temp_file, "wb") as f:
                 f.write(image_data)
@@ -563,20 +556,20 @@ class ComfyUIHub(Star):
             if event.get_platform_name() in ["discord", "telegram"]:
                 file_size = len(image_data)
                 max_size = 10 * 1024 * 1024  # 10MB
-                
+
                 if file_size > max_size:
                     size_mb = file_size / (1024 * 1024)
                     logger.info(f"图片大小 {size_mb:.1f}MB 超过限制，尝试压缩...")
-                    
+
                     # 尝试转换为WebP格式
                     try:
                         img = PILImage.open(BytesIO(image_data))
-                        
+
                         # 先尝试WebP（质量90）
                         webp_buffer = BytesIO()
                         img.save(webp_buffer, format='WEBP', quality=90)
                         webp_size = webp_buffer.tell()
-                        
+
                         if webp_size <= max_size:
                             temp_file = self.temp_dir / f"{int(time.time())}.webp"
                             with open(temp_file, "wb") as f:
@@ -589,7 +582,7 @@ class ComfyUIHub(Star):
                                 avif_buffer = BytesIO()
                                 img.save(avif_buffer, format='AVIF', quality=85)
                                 avif_size = avif_buffer.tell()
-                                
+
                                 if avif_size <= max_size:
                                     temp_file = self.temp_dir / f"{int(time.time())}.avif"
                                     with open(temp_file, "wb") as f:
@@ -820,7 +813,7 @@ class ComfyUIHub(Star):
             # 情况2：处理直接的图片消息
             elif isinstance(msg, ImageComponent):
                 image_data = await self._get_image_data(msg)
-            
+
             if image_data:
                 break
 
