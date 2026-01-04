@@ -143,5 +143,47 @@
     "type": "string",
     "default": "",
     "hint": "Tagger工作流中文本输出的节点编号"
+  },
+  "enable_img2img": {
+    "description": "启用图生图功能",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后允许使用图生图功能"
+  },
+  "img2img_workflow": {
+    "description": "图生图工作流文件名",
+    "type": "string",
+    "default": "example_img2img.json",
+    "hint": "图生图工作流文件名，文件需放在 plugin_data/astrbot_plugin_comfyui_hub/workflows/ 目录下"
+  },
+  "img2img_positive_node": {
+    "description": "图生图正面提示词节点ID",
+    "type": "string",
+    "default": "20",
+    "hint": "图生图工作流中正面提示词的节点编号"
+  },
+  "img2img_negative_node": {
+    "description": "图生图负面提示词节点ID",
+    "type": "string",
+    "default": "21",
+    "hint": "图生图工作流中负面提示词的节点编号"
+  },
+  "img2img_input_node": {
+    "description": "图生图输入节点ID",
+    "type": "string",
+    "default": "15",
+    "hint": "图生图工作流中LoadImage节点的编号"
+  },
+  "enable_img2img_output_censorship": {
+    "description": "启用图生图输出审查",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后将对图生图生成的图片进行审查，使用tagger获取图片标签并进行安全检查"
+  },
+  "img2img_output_censorship_use_llm": {
+    "description": "图生图输出审查使用LLM",
+    "type": "bool",
+    "default": true,
+    "hint": "图生图输出审查时是否使用LLM进行智能判断"
   }
 }

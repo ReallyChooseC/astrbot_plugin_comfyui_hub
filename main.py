@@ -13,6 +13,7 @@ from astrbot.api.star import Context, Star, register
 
 from .comfyui_api import ComfyUIAPI
 from .image_to_text import ImageToText
+from .image_to_image import ImageToImage
 from .text_to_image import TextToImage
 
 
@@ -93,6 +94,26 @@ class ComfyUIHub(Star):
                     config.get("tagger_input_node", "")
                 )
 
+        # 初始化图生图设置
+        self.img2img = None
+        if config.get("enable_img2img", True):
+            img2img_workflow_filename = config.get("img2img_workflow", "example_img2img.json")
+            img2img_workflow_path = workflow_dir / img2img_workflow_filename
+
+            if not img2img_workflow_path.exists():
+                example_path = plugin_dir / "example_img2img.json"
+                if example_path.exists() and not img2img_workflow_path.exists():
+                    shutil.copy(example_path, img2img_workflow_path)
+
+            if img2img_workflow_path.exists():
+                self.img2img = ImageToImage(
+                    self.api,
+                    str(img2img_workflow_path),
+                    config.get("img2img_positive_node", "20"),
+                    config.get("img2img_negative_node", "21"),
+                    config.get("img2img_input_node", "15")
+                )
+
         # 初始化审查设置
         self.enable_input_censorship = config.get("enable_input_censorship", True)
         self.input_censorship_use_llm = config.get("input_censorship_use_llm", True)
@@ -103,6 +124,10 @@ class ComfyUIHub(Star):
         # 输出图片审查设置
         self.enable_output_censorship = config.get("enable_output_censorship", False)
         self.output_censorship_use_llm = config.get("output_censorship_use_llm", True)
+
+        # 图生图输出审查设置
+        self.enable_img2img_output_censorship = config.get("enable_img2img_output_censorship", False)
+        self.img2img_output_censorship_use_llm = config.get("img2img_output_censorship_use_llm", True)
 
     def _load_block_data(self):
         self.block_tags = set()
@@ -898,3 +923,215 @@ class ComfyUIHub(Star):
             logger.error(f"通过文件路径获取图片失败: {e}")
 
         return None
+
+    @filter.command("img2img", alias={'图生图', '图像编辑', 'i2i'})
+    async def img2img(self, event: AstrMessageEvent):
+        """图生图指令，输入图片和提示词输出图片"""
+        # 检查图生图功能是否开启
+        if not self.img2img:
+            yield event.plain_result("⚠️ 图生图功能未开启")
+            return
+
+        # 获取消息中的图片
+        from astrbot.api.message_components import Image as ImageComponent, Reply as ReplyComponent
+        chain = event.get_messages()
+        image_data = None
+
+        for msg in chain:
+            # 情况1：处理 Reply 消息中的图片
+            if isinstance(msg, ReplyComponent) and msg.chain:
+                for chain_msg in msg.chain:
+                    if isinstance(chain_msg, ImageComponent):
+                        image_data = await self._get_image_data(chain_msg)
+                        if image_data:
+                            break
+            # 情况2：处理直接的图片消息
+            elif isinstance(msg, ImageComponent):
+                image_data = await self._get_image_data(msg)
+
+            if image_data:
+                break
+
+        if not image_data:
+            yield event.plain_result("请发送或回复一张图片")
+            return
+
+        # 解析提示词
+        text = event.message_str.strip()
+
+        # 统一剥离命令前缀
+        for cmd in ['img2img', '图生图', '图像编辑', 'i2i']:
+            pattern = rf'^[\s/#]?{re.escape(cmd)}\s+'
+            match = re.match(pattern, text, re.IGNORECASE)
+            if match:
+                text = text[match.end():]
+                break
+            # 如果只是命令本身（无参数）
+            if re.match(rf'^[\s/#]?{re.escape(cmd)}$', text, re.IGNORECASE):
+                text = ""
+                break
+
+        # 解析参数
+        params = self._parse_params(text)
+        positive, negative, chain_param, _, _, _ = params
+
+        if not positive:
+            yield event.plain_result("请输入提示词")
+            return
+
+        logger.info(f"成功获取图片数据，大小: {len(image_data)} 字节")
+
+        # 发送"正在生成图片..."消息
+        text_msg_id = None
+        group_id = event.get_group_id()
+        is_aiocqhttp = event.get_platform_name() == "aiocqhttp"
+
+        if is_aiocqhttp and group_id:
+            try:
+                client = event.bot
+                result = await client.api.call_action(
+                    "send_group_msg",
+                    group_id=int(group_id),
+                    message="正在生成图片..."
+                )
+                if result:
+                    if isinstance(result, dict):
+                        if 'data' in result and result['data']:
+                            text_msg_id = result['data'].get('message_id')
+                        elif 'message_id' in result:
+                            text_msg_id = result['message_id']
+                    elif isinstance(result, (int, str)):
+                        text_msg_id = str(result)
+            except Exception as e:
+                logger.error(f"发送文字消息失败: {e}")
+
+        # 生成图片
+        result_image = await self.img2img.generate(image_data, positive, negative)
+
+        if result_image:
+            # 图生图输出图片审查
+            if self.enable_img2img_output_censorship and self.img2txt:
+                # 使用 tagger 获取图片标签
+                tags_text = await self.img2txt.generate(result_image)
+
+                if tags_text:
+                    logger.info(f"图生图输出图片标签: {tags_text}")
+
+                    # 检查方式1: 使用简单关键词审查（始终执行）
+                    is_safe_simple, reason_simple = self._check_simple_tags(tags_text)
+                    if not is_safe_simple:
+                        logger.info(f"图生图输出图片关键词审查拦截: {reason_simple}")
+                        yield event.plain_result(f"⚠️ 生成的图片{reason_simple}，已被审查系统拒绝。")
+                        return
+
+                    # 检查方式2: 使用 LLM 审查
+                    if self.img2img_output_censorship_use_llm:
+                        is_safe, reason = await self._check_safety_with_llm(event, tags_text, is_output_check=True)
+                        if not is_safe:
+                            logger.info(f"图生图输出图片 LLM 审查拦截")
+                            yield event.plain_result(f"⚠️ 生成的图片包含敏感内容，已被AI审查系统拒绝。")
+                            return
+
+                    logger.info("图生图输出图片审查通过")
+            temp_file = self.temp_dir / f"{int(time.time())}.png"
+            with open(temp_file, "wb") as f:
+                f.write(result_image)
+
+            sent_msg_id = None
+
+            if is_aiocqhttp and group_id:
+                # 使用 aiocqhttp 底层 API 发送消息，以获取消息 ID
+                client = event.bot
+
+                if chain_param:
+                    # 合并转发
+                    try:
+                        node = Node(
+                            uin=event.get_sender_id(),
+                            name="ComfyUI",
+                            content=[Image.fromFileSystem(str(temp_file))]
+                        )
+                        # 使用 send_group_forward_msg 发送合并转发
+                        result = await client.api.call_action(
+                            "send_group_forward_msg",
+                            group_id=int(group_id),
+                            messages=[node]
+                        )
+                        if result:
+                            if isinstance(result, dict):
+                                if 'data' in result and result['data']:
+                                    sent_msg_id = result['data'].get('message_id') if isinstance(result['data'], dict) else result['data']
+                                elif 'message_id' in result:
+                                    sent_msg_id = result['message_id']
+                            elif isinstance(result, (int, str)):
+                                sent_msg_id = str(result)
+                    except Exception as e:
+                        logger.error(f"合并转发发送失败: {e}，改用普通图片发送")
+                        # 失败则回退到普通图片发送
+                        result = await client.api.call_action(
+                            "send_group_msg",
+                            group_id=int(group_id),
+                            message=[Image.fromFileSystem(str(temp_file))]
+                        )
+                        if result:
+                            if isinstance(result, dict):
+                                if 'data' in result and result['data']:
+                                    sent_msg_id = result['data'].get('message_id')
+                                elif 'message_id' in result:
+                                    sent_msg_id = result['message_id']
+                            elif isinstance(result, (int, str)):
+                                sent_msg_id = str(result)
+                else:
+                    # 普通图片消息
+                    result = await client.api.call_action(
+                        "send_group_msg",
+                        group_id=int(group_id),
+                        message=[Image.fromFileSystem(str(temp_file))]
+                    )
+                    if result:
+                        if isinstance(result, dict):
+                            if 'data' in result and result['data']:
+                                sent_msg_id = result['data'].get('message_id')
+                            elif 'message_id' in result:
+                                sent_msg_id = result['message_id']
+                        elif isinstance(result, (int, str)):
+                            sent_msg_id = str(result)
+            else:
+                # 非 aiocqhttp 平台或私聊，使用默认方法
+                if chain_param:
+                    try:
+                        node = Node(
+                            uin=event.get_sender_id(),
+                            name="ComfyUI",
+                            content=[Image.fromFileSystem(str(temp_file))]
+                        )
+                        yield event.chain_result([node])
+                    except Exception:
+                        yield event.image_result(str(temp_file))
+                else:
+                    yield event.image_result(str(temp_file))
+
+            # 记录所有发送的消息ID（带时间戳）
+            if group_id:
+                group_id_str = str(group_id)
+                if group_id_str not in self.sent_messages:
+                    self.sent_messages[group_id_str] = []
+                # 先记录文字消息ID
+                if text_msg_id:
+                    self.sent_messages[group_id_str].append({
+                        'message_id': str(text_msg_id),
+                        'timestamp': time.time(),
+                        'user_id': str(event.get_sender_id())
+                    })
+                # 再记录图片消息ID
+                if sent_msg_id:
+                    self.sent_messages[group_id_str].append({
+                        'message_id': str(sent_msg_id),
+                        'timestamp': time.time(),
+                        'user_id': str(event.get_sender_id())
+                    })
+                self._save_block_data()
+            # 停止事件传播，避免触发 LLM
+            event.stop_event()
+        else:
+            yield event.plain_result("生成失败")
