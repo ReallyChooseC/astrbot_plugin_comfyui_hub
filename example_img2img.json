@@ -1,14 +1,14 @@
 {
   "4": {
     "inputs": {
-      "seed": 401823480055464,
+      "seed": 917049501823290,
       "steps": 4,
       "cfg": 1,
       "sampler_name": "dpmpp_2m",
       "scheduler": "simple",
       "denoise": 1,
       "model": [
-        "8",
+        "28",
         0
       ],
       "positive": [
@@ -43,67 +43,6 @@
     "class_type": "VAEEncode",
     "_meta": {
       "title": "VAE编码"
-    }
-  },
-  "7": {
-    "inputs": {
-      "shift": 3.1,
-      "model": [
-        "11",
-        0
-      ]
-    },
-    "class_type": "ModelSamplingAuraFlow",
-    "_meta": {
-      "title": "采样算法（AuraFlow）"
-    }
-  },
-  "8": {
-    "inputs": {
-      "strength": 1,
-      "model": [
-        "7",
-        0
-      ]
-    },
-    "class_type": "CFGNorm",
-    "_meta": {
-      "title": "CFG归一化"
-    }
-  },
-  "9": {
-    "inputs": {
-      "unet_name": "qwen_image_edit_2511_fp8mixed.safetensors",
-      "weight_dtype": "default"
-    },
-    "class_type": "UNETLoader",
-    "_meta": {
-      "title": "UNet加载器"
-    }
-  },
-  "11": {
-    "inputs": {
-      "lora_name": "Qwen-Image-Edit-2511-Lightning-4steps-V1.0-fp32.safetensors",
-      "strength_model": 1,
-      "model": [
-        "9",
-        0
-      ]
-    },
-    "class_type": "LoraLoaderModelOnly",
-    "_meta": {
-      "title": "LoRA加载器（仅模型）"
-    }
-  },
-  "12": {
-    "inputs": {
-      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
-      "type": "qwen_image",
-      "device": "default"
-    },
-    "class_type": "CLIPLoader",
-    "_meta": {
-      "title": "加载CLIP"
     }
   },
   "13": {
@@ -155,9 +94,9 @@
   },
   "20": {
     "inputs": {
-      "prompt": "",
+      "prompt": "Positive prompt input",
       "clip": [
-        "12",
+        "31",
         0
       ],
       "vae": [
@@ -178,7 +117,7 @@
     "inputs": {
       "prompt": "",
       "clip": [
-        "12",
+        "31",
         0
       ],
       "vae": [
@@ -198,7 +137,7 @@
   "24": {
     "inputs": {
       "upscale_method": "lanczos",
-      "megapixels": 1.5,
+      "megapixels": 1,
       "resolution_steps": 1,
       "image": [
         "15",
@@ -208,6 +147,26 @@
     "class_type": "ImageScaleToTotalPixels",
     "_meta": {
       "title": "缩放图像（像素）"
+    }
+  },
+  "28": {
+    "inputs": {
+      "unet_name": "Qwen-Rapid-NSFW-v18_Q4_K.gguf"
+    },
+    "class_type": "UnetLoaderGGUF",
+    "_meta": {
+      "title": "Unet Loader (GGUF)"
+    }
+  },
+  "31": {
+    "inputs": {
+      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "stable_diffusion",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "加载CLIP"
     }
   }
 }
