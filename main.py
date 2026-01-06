@@ -757,19 +757,8 @@ class ComfyUIHub(Star):
                         elif isinstance(result, (int, str)):
                             sent_msg_id = str(result)
             else:
-                # 非 aiocqhttp 平台或私聊，使用默认方法
-                if chain:
-                    try:
-                        node = Node(
-                            uin=event.get_sender_id(),
-                            name="ComfyUI",
-                            content=[Image.fromFileSystem(str(temp_file))]
-                        )
-                        yield event.chain_result([node])
-                    except Exception:
-                        yield event.image_result(str(temp_file))
-                else:
-                    yield event.image_result(str(temp_file))
+                # 非 aiocqhttp 平台或私聊，使用通用图片发送方式
+                yield event.image_result(str(temp_file))
 
             # 记录所有发送的消息ID（带时间戳）
             if group_id:
@@ -1127,19 +1116,8 @@ class ComfyUIHub(Star):
                         elif isinstance(result, (int, str)):
                             sent_msg_id = str(result)
             else:
-                # 非 aiocqhttp 平台或私聊，使用默认方法
-                if chain_param:
-                    try:
-                        node = Node(
-                            uin=event.get_sender_id(),
-                            name="ComfyUI",
-                            content=[Image.fromFileSystem(str(temp_file))]
-                        )
-                        yield event.chain_result([node])
-                    except Exception:
-                        yield event.image_result(str(temp_file))
-                else:
-                    yield event.image_result(str(temp_file))
+                # 非 aiocqhttp 平台或私聊，使用通用图片发送方式
+                yield event.image_result(str(temp_file))
 
             # 记录所有发送的消息ID（带时间戳）
             if group_id:
