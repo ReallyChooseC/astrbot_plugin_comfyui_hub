@@ -3,6 +3,7 @@ import random
 import time
 from typing import Optional
 
+from PIL import Image as PILImage
 from astrbot.api import logger
 
 from .comfyui_api import ComfyUIAPI
@@ -38,14 +39,52 @@ class ImageToImage:
         inputs[first_key] = prompt
         return True
 
+    @staticmethod
+    def _extract_first_frame_if_gif(image_data: bytes) -> Optional[bytes]:
+        """
+        如果输入是动图（GIF/WebP），提取第一帧
+        如果是动图且处理失败，返回 None 拒绝使用原图
+        
+        Returns:
+            处理后的图片数据（首帧），如果是动图且处理失败则返回 None
+        """
+        try:
+            with PILImage.open(PILImage.BytesIO(image_data)) as img:
+                # 检查是否为动图
+                is_animated = getattr(img, 'is_animated', False)
+                
+                if is_animated:
+                    logger.info("[ComfyUI] 检测到动图，将使用首帧")
+                    # 提取第一帧
+                    img.seek(0)
+                    # 转换为RGB模式（避免某些模式导致的错误）
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    # 保存为PNG格式
+                    output = PILImage.BytesIO()
+                    img.save(output, format='PNG')
+                    return output.getvalue()
+                
+                # 静态图片直接返回
+                return image_data
+        except Exception as e:
+            logger.error(f"[ComfyUI] 动图检测/处理失败: {e}")
+            return None
+
     async def generate(self, image_data: bytes, prompt: str, negative: str = "") -> Optional[bytes]:
         """生成图片"""
         workflow = json.loads(json.dumps(self.workflow))
 
+        # 处理动图：如果是动图则提取首帧，处理失败则拒绝
+        processed_image_data = self._extract_first_frame_if_gif(image_data)
+        if processed_image_data is None:
+            logger.error("[ComfyUI] 不支持动图输入，请使用静态图片")
+            return None
+
         # 上传图片到 ComfyUI（使用时间戳避免缓存）
         filename = f"img2img_input_{int(time.time() * 1000)}_{random.randint(1000, 9999)}.png"
         try:
-            await self.api.upload_image(filename, image_data)
+            await self.api.upload_image(filename, processed_image_data)
         except Exception as e:
             logger.error(f"[ComfyUI] 上传图片失败: {e}")
             return None
