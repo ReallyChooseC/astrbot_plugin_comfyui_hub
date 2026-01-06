@@ -1,6 +1,7 @@
 import json
 import random
 import time
+from io import BytesIO
 from typing import Optional
 
 from PIL import Image as PILImage
@@ -44,15 +45,15 @@ class ImageToImage:
         """
         如果输入是动图（GIF/WebP），提取第一帧
         如果是动图且处理失败，返回 None 拒绝使用原图
-        
+
         Returns:
             处理后的图片数据（首帧），如果是动图且处理失败则返回 None
         """
         try:
-            with PILImage.open(PILImage.BytesIO(image_data)) as img:
+            with PILImage.open(BytesIO(image_data)) as img:
                 # 检查是否为动图
                 is_animated = getattr(img, 'is_animated', False)
-                
+
                 if is_animated:
                     logger.info("[ComfyUI] 检测到动图，将使用首帧")
                     # 提取第一帧
@@ -61,10 +62,10 @@ class ImageToImage:
                     if img.mode != 'RGB':
                         img = img.convert('RGB')
                     # 保存为PNG格式
-                    output = PILImage.BytesIO()
+                    output = BytesIO()
                     img.save(output, format='PNG')
                     return output.getvalue()
-                
+
                 # 静态图片直接返回
                 return image_data
         except Exception as e:
