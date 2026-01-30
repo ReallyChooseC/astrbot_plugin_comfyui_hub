@@ -50,6 +50,10 @@ class ImageToText:
                     load_image_found = True
                     break
 
+        if not load_image_found:
+            logger.error("[ComfyUI] 未找到 LoadImage 节点")
+            return None
+
         # 提交任务
         prompt_id = await self.api.queue_prompt(workflow)
         if not prompt_id:

@@ -195,6 +195,89 @@ class ComfyUIHub(Star):
             if not valid_messages:
                 del self.sent_messages[group_id]
 
+    async def _send_text_message(self, event: AstrMessageEvent, message: str) -> str:
+        """发送文字消息并记录消息ID"""
+        result = await self._call_send_api(event, message)
+        return self._extract_and_record_message(result, event)
+
+    async def _send_image_message(self, event: AstrMessageEvent, image_file: Path, chain: bool = False) -> str:
+        """发送图片消息并记录消息ID"""
+        group_id = event.get_group_id()
+
+        if group_id and chain:
+            # 群聊合并转发
+            try:
+                node = Node(
+                    uin=event.get_sender_id(),
+                    name="ComfyUI",
+                    content=[Image.fromFileSystem(str(image_file))]
+                )
+                result = await event.bot.api.call_action(
+                    "send_group_forward_msg",
+                    group_id=int(group_id),
+                    messages=[node]
+                )
+            except Exception as e:
+                logger.error(f"合并转发发送失败: {e}")
+                # 回退到普通发送
+                result = await self._call_send_api(event, [Image.fromFileSystem(str(image_file))])
+        else:
+            # 普通图片发送（群聊或私聊）
+            result = await self._call_send_api(event, [Image.fromFileSystem(str(image_file))])
+
+        return self._extract_and_record_message(result, event)
+
+    async def _call_send_api(self, event: AstrMessageEvent, message):
+        """调用发送消息 API"""
+        if event.get_platform_name() != "aiocqhttp":
+            return None
+
+        group_id = event.get_group_id()
+        user_id = event.get_sender_id()
+
+        if group_id:
+            return await event.bot.api.call_action(
+                "send_group_msg",
+                group_id=int(group_id),
+                message=message
+            )
+        elif user_id:
+            return await event.bot.api.call_action(
+                "send_private_msg",
+                user_id=int(user_id),
+                message=message
+            )
+        return None
+
+    def _extract_and_record_message(self, result, event: AstrMessageEvent) -> str:
+        """从API返回结果中提取并记录消息ID"""
+        message_id = None
+
+        if result:
+            if isinstance(result, dict):
+                data = result.get('data')
+                if data:
+                    message_id = data.get('message_id') if isinstance(data, dict) else str(data)
+                elif 'message_id' in result:
+                    message_id = result['message_id']
+                elif result.get('retcode') == 0:
+                    message_id = result.get('data', {}).get('message_id')
+            elif isinstance(result, (int, str)):
+                message_id = str(result)
+
+        if message_id:
+            key = str(event.get_group_id()) if event.get_group_id() else str(event.get_sender_id())
+            if key not in self.sent_messages:
+                self.sent_messages[key] = []
+            self.sent_messages[key].append({
+                'message_id': str(message_id),
+                'timestamp': time.time(),
+                'user_id': str(event.get_sender_id())
+            })
+            self._save_block_data()
+
+        return message_id
+
     def _save_block_data(self):
         try:
             with open(self.block_tags_file, "w", encoding='utf-8') as f:
@@ -585,32 +668,8 @@ class ComfyUIHub(Star):
             yield event.plain_result("请输入正面提示词")
             return
 
-        # 发送"正在生成图片..."消息（使用 API 以获取消息ID）
-        text_msg_id = None
-        group_id = event.get_group_id()
-        is_aiocqhttp = event.get_platform_name() == "aiocqhttp"
-
-        if is_aiocqhttp and group_id:
-            try:
-                client = event.bot
-                result = await client.api.call_action(
-                    "send_group_msg",
-                    group_id=int(group_id),
-                    message="正在生成图片..."
-                )
-                if result:
-                    # 尝试多种可能的返回结构
-                    if isinstance(result, dict):
-                        if 'data' in result and result['data']:
-                            text_msg_id = result['data'].get('message_id')
-                        elif 'message_id' in result:
-                            text_msg_id = result['message_id']
-                        elif 'retcode' in result and result['retcode'] == 0:
-                            text_msg_id = result.get('data', {}).get('message_id')
-                    elif isinstance(result, (int, str)):
-                        text_msg_id = str(result)
-            except Exception as e:
-                logger.error(f"发送文字消息失败: {e}")
+        # 发送"正在生成图片..."消息
+        await self._send_text_message(event, "正在生成图片...")
 
         image_data = await self.txt2img.generate(positive, negative, width, height, scale)
 
@@ -696,90 +755,13 @@ class ComfyUIHub(Star):
                         logger.error(f"图片压缩失败: {e}")
                         yield event.plain_result(f"⚠️ 警告：生成的图片为 {size_mb:.1f}MB，超过平台默认 10MB 限制，压缩失败")
 
-            sent_msg_id = None
-
-            if is_aiocqhttp and group_id:
-                # 使用 aiocqhttp 底层 API 发送消息，以获取消息 ID
-                client = event.bot
-
-                if chain:
-                    # 合并转发
-                    try:
-                        node = Node(
-                            uin=event.get_sender_id(),
-                            name="ComfyUI",
-                            content=[Image.fromFileSystem(str(temp_file))]
-                        )
-                        # 使用 send_group_forward_msg 发送合并转发
-                        result = await client.api.call_action(
-                            "send_group_forward_msg",
-                            group_id=int(group_id),
-                            messages=[node]
-                        )
-                        if result:
-                            # 尝试多种可能的返回结构
-                            if isinstance(result, dict):
-                                if 'data' in result and result['data']:
-                                    sent_msg_id = result['data'].get('message_id') if isinstance(result['data'], dict) else result['data']
-                                elif 'message_id' in result:
-                                    sent_msg_id = result['message_id']
-                            elif isinstance(result, (int, str)):
-                                sent_msg_id = str(result)
-                    except Exception as e:
-                        logger.error(f"合并转发发送失败: {e}，改用普通图片发送")
-                        # 失败则回退到普通图片发送
-                        result = await client.api.call_action(
-                            "send_group_msg",
-                            group_id=int(group_id),
-                            message=[Image.fromFileSystem(str(temp_file))]
-                        )
-                        if result:
-                            if isinstance(result, dict):
-                                if 'data' in result and result['data']:
-                                    sent_msg_id = result['data'].get('message_id')
-                                elif 'message_id' in result:
-                                    sent_msg_id = result['message_id']
-                            elif isinstance(result, (int, str)):
-                                sent_msg_id = str(result)
-                else:
-                    # 普通图片消息
-                    result = await client.api.call_action(
-                        "send_group_msg",
-                        group_id=int(group_id),
-                        message=[Image.fromFileSystem(str(temp_file))]
-                    )
-                    if result:
-                        if isinstance(result, dict):
-                            if 'data' in result and result['data']:
-                                sent_msg_id = result['data'].get('message_id')
-                            elif 'message_id' in result:
-                                sent_msg_id = result['message_id']
-                        elif isinstance(result, (int, str)):
-                            sent_msg_id = str(result)
-            else:
-                # 非 aiocqhttp 平台或私聊，使用通用图片发送方式
+            # 发送图片消息
+            if event.get_platform_name() != "aiocqhttp":
+                # 非 aiocqhttp 平台，使用通用图片发送方式
                 yield event.image_result(str(temp_file))
+            else:
+                await self._send_image_message(event, temp_file, chain)
 
-            # 记录所有发送的消息ID（带时间戳）
-            if group_id:
-                group_id_str = str(group_id)
-                if group_id_str not in self.sent_messages:
-                    self.sent_messages[group_id_str] = []
-                # 先记录文字消息ID
-                if text_msg_id:
-                    self.sent_messages[group_id_str].append({
-                        'message_id': str(text_msg_id),
-                        'timestamp': time.time(),
-                        'user_id': str(event.get_sender_id())
-                    })
-                # 再记录图片消息ID
-                if sent_msg_id:
-                    self.sent_messages[group_id_str].append({
-                        'message_id': str(sent_msg_id),
-                        'timestamp': time.time(),
-                        'user_id': str(event.get_sender_id())
-                    })
-                self._save_block_data()
             # 停止事件传播，避免触发 LLM
             event.stop_event()
         else:
@@ -886,28 +868,7 @@ class ComfyUIHub(Star):
         logger.info(f"成功获取图片数据，大小: {len(image_data)} 字节")
 
         # 发送"正在识别图片..."消息
-        text_msg_id = None
-        group_id = event.get_group_id()
-        is_aiocqhttp = event.get_platform_name() == "aiocqhttp"
-
-        if is_aiocqhttp and group_id:
-            try:
-                client = event.bot
-                result = await client.api.call_action(
-                    "send_group_msg",
-                    group_id=int(group_id),
-                    message="正在识别图片标签..."
-                )
-                if result:
-                    if isinstance(result, dict):
-                        if 'data' in result and result['data']:
-                            text_msg_id = result['data'].get('message_id')
-                        elif 'message_id' in result:
-                            text_msg_id = result['message_id']
-                    elif isinstance(result, (int, str)):
-                        text_msg_id = str(result)
-            except Exception as e:
-                logger.error(f"发送文字消息失败: {e}")
+        await self._send_text_message(event, "正在识别图片标签...")
 
         # 生成标签
         result_text = await self.img2txt.generate(image_data)
@@ -919,18 +880,6 @@ class ComfyUIHub(Star):
             logger.info(f"格式化后的标签: {formatted_tags}")
             yield event.plain_result(f"【标签】\n{formatted_tags}")
 
-            # 记录发送的消息ID（带时间戳）
-            if group_id:
-                group_id_str = str(group_id)
-                if group_id_str not in self.sent_messages:
-                    self.sent_messages[group_id_str] = []
-                if text_msg_id:
-                    self.sent_messages[group_id_str].append({
-                        'message_id': str(text_msg_id),
-                        'timestamp': time.time(),
-                        'user_id': str(event.get_sender_id())
-                    })
-                self._save_block_data()
             # 停止事件传播，避免触发 LLM
             event.stop_event()
         else:
@@ -1019,28 +968,7 @@ class ComfyUIHub(Star):
         logger.info(f"成功获取图片数据，大小: {len(image_data)} 字节")
 
         # 发送"正在生成图片..."消息
-        text_msg_id = None
-        group_id = event.get_group_id()
-        is_aiocqhttp = event.get_platform_name() == "aiocqhttp"
-
-        if is_aiocqhttp and group_id:
-            try:
-                client = event.bot
-                result = await client.api.call_action(
-                    "send_group_msg",
-                    group_id=int(group_id),
-                    message="正在生成图片..."
-                )
-                if result:
-                    if isinstance(result, dict):
-                        if 'data' in result and result['data']:
-                            text_msg_id = result['data'].get('message_id')
-                        elif 'message_id' in result:
-                            text_msg_id = result['message_id']
-                    elif isinstance(result, (int, str)):
-                        text_msg_id = str(result)
-            except Exception as e:
-                logger.error(f"发送文字消息失败: {e}")
+        await self._send_text_message(event, "正在生成图片...")
 
         # 生成图片
         result_image = await self.img2img.generate(image_data, positive, negative)
@@ -1056,89 +984,13 @@ class ComfyUIHub(Star):
             with open(temp_file, "wb") as f:
                 f.write(result_image)
 
-            sent_msg_id = None
-
-            if is_aiocqhttp and group_id:
-                # 使用 aiocqhttp 底层 API 发送消息，以获取消息 ID
-                client = event.bot
-
-                if chain_param:
-                    # 合并转发
-                    try:
-                        node = Node(
-                            uin=event.get_sender_id(),
-                            name="ComfyUI",
-                            content=[Image.fromFileSystem(str(temp_file))]
-                        )
-                        # 使用 send_group_forward_msg 发送合并转发
-                        result = await client.api.call_action(
-                            "send_group_forward_msg",
-                            group_id=int(group_id),
-                            messages=[node]
-                        )
-                        if result:
-                            if isinstance(result, dict):
-                                if 'data' in result and result['data']:
-                                    sent_msg_id = result['data'].get('message_id') if isinstance(result['data'], dict) else result['data']
-                                elif 'message_id' in result:
-                                    sent_msg_id = result['message_id']
-                            elif isinstance(result, (int, str)):
-                                sent_msg_id = str(result)
-                    except Exception as e:
-                        logger.error(f"合并转发发送失败: {e}，改用普通图片发送")
-                        # 失败则回退到普通图片发送
-                        result = await client.api.call_action(
-                            "send_group_msg",
-                            group_id=int(group_id),
-                            message=[Image.fromFileSystem(str(temp_file))]
-                        )
-                        if result:
-                            if isinstance(result, dict):
-                                if 'data' in result and result['data']:
-                                    sent_msg_id = result['data'].get('message_id')
-                                elif 'message_id' in result:
-                                    sent_msg_id = result['message_id']
-                            elif isinstance(result, (int, str)):
-                                sent_msg_id = str(result)
-                else:
-                    # 普通图片消息
-                    result = await client.api.call_action(
-                        "send_group_msg",
-                        group_id=int(group_id),
-                        message=[Image.fromFileSystem(str(temp_file))]
-                    )
-                    if result:
-                        if isinstance(result, dict):
-                            if 'data' in result and result['data']:
-                                sent_msg_id = result['data'].get('message_id')
-                            elif 'message_id' in result:
-                                sent_msg_id = result['message_id']
-                        elif isinstance(result, (int, str)):
-                            sent_msg_id = str(result)
-            else:
-                # 非 aiocqhttp 平台或私聊，使用通用图片发送方式
+            # 发送图片消息
+            if event.get_platform_name() != "aiocqhttp":
+                # 非 aiocqhttp 平台，使用通用图片发送方式
                 yield event.image_result(str(temp_file))
+            else:
+                await self._send_image_message(event, temp_file, chain_param)
 
-            # 记录所有发送的消息ID（带时间戳）
-            if group_id:
-                group_id_str = str(group_id)
-                if group_id_str not in self.sent_messages:
-                    self.sent_messages[group_id_str] = []
-                # 先记录文字消息ID
-                if text_msg_id:
-                    self.sent_messages[group_id_str].append({
-                        'message_id': str(text_msg_id),
-                        'timestamp': time.time(),
-                        'user_id': str(event.get_sender_id())
-                    })
-                # 再记录图片消息ID
-                if sent_msg_id:
-                    self.sent_messages[group_id_str].append({
-                        'message_id': str(sent_msg_id),
-                        'timestamp': time.time(),
-                        'user_id': str(event.get_sender_id())
-                    })
-                self._save_block_data()
             # 停止事件传播，避免触发 LLM
             event.stop_event()
         else:
