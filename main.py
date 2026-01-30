@@ -18,7 +18,7 @@ from .text_to_image import TextToImage
 
 
 @register("astrbot_plugin_comfyui_hub", "ChooseC", "为 AstrBot 提供 ComfyUI 调用能力的插件，计划支持 ComfyUI 全功能。",
-          "1.0.8", "https://github.com/ReallyChooseC/astrbot_plugin_comfyui_hub")
+          "1.0.9", "https://github.com/ReallyChooseC/astrbot_plugin_comfyui_hub")
 class ComfyUIHub(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
