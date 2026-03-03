@@ -220,10 +220,10 @@ class ComfyUIHub(Star):
             except Exception as e:
                 logger.error(f"合并转发发送失败: {e}")
                 # 回退到普通发送
-                result = await self._call_send_api(event, [Image.fromFileSystem(str(image_file))])
+                result = await self._call_send_api(event, f"[CQ:image,file=file://{image_file}]")
         else:
             # 普通图片发送（群聊或私聊）
-            result = await self._call_send_api(event, [Image.fromFileSystem(str(image_file))])
+            result = await self._call_send_api(event, f"[CQ:image,file=file://{image_file}]")
 
         return self._extract_and_record_message(result, event)
 
