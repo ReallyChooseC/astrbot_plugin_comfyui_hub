@@ -207,15 +207,26 @@ class ComfyUIHub(Star):
         if group_id and chain:
             # 群聊合并转发
             try:
-                node = Node(
-                    uin=event.get_sender_id(),
-                    name="ComfyUI",
-                    content=[Image.fromFileSystem(str(image_file))]
-                )
+                # 构造 OneBot v11 合并转发消息格式
+                forward_msg = [{
+                    "type": "node",
+                    "data": {
+                        "user_id": int(event.get_sender_id()),
+                        "nickname": "ComfyUI",
+                        "content": [
+                            {
+                                "type": "image",
+                                "data": {
+                                    "file": f"file://{image_file}"
+                                }
+                            }
+                        ]
+                    }
+                }]
                 result = await event.bot.api.call_action(
                     "send_group_forward_msg",
                     group_id=int(group_id),
-                    messages=[node]
+                    messages=forward_msg
                 )
             except Exception as e:
                 logger.error(f"合并转发发送失败: {e}")
