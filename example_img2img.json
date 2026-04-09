@@ -1,14 +1,14 @@
 {
   "4": {
     "inputs": {
-      "seed": 917049501823290,
+      "seed": 1005448967484944,
       "steps": 4,
       "cfg": 1,
       "sampler_name": "dpmpp_2m",
       "scheduler": "simple",
       "denoise": 1,
       "model": [
-        "28",
+        "36",
         0
       ],
       "positive": [
@@ -32,7 +32,7 @@
   "6": {
     "inputs": {
       "pixels": [
-        "24",
+        "37:1",
         0
       ],
       "vae": [
@@ -54,15 +54,6 @@
       "title": "加载VAE"
     }
   },
-  "15": {
-    "inputs": {
-      "image": "input.png"
-    },
-    "class_type": "LoadImage",
-    "_meta": {
-      "title": "加载图像"
-    }
-  },
   "16": {
     "inputs": {
       "samples": [
@@ -81,30 +72,37 @@
   },
   "19": {
     "inputs": {
-      "filename_prefix": "ComfyUI",
       "images": [
         "16",
         0
       ]
     },
-    "class_type": "SaveImage",
+    "class_type": "PreviewImage",
     "_meta": {
-      "title": "保存图像"
+      "title": "预览图像"
     }
   },
   "20": {
     "inputs": {
-      "prompt": "Positive prompt input",
+      "prompt": "example prompt",
       "clip": [
-        "31",
-        0
+        "36",
+        1
       ],
       "vae": [
         "13",
         0
       ],
       "image1": [
-        "24",
+        "37:1",
+        0
+      ],
+      "image2": [
+        "38:1",
+        0
+      ],
+      "image3": [
+        "39:1",
         0
       ]
     },
@@ -117,36 +115,17 @@
     "inputs": {
       "prompt": "",
       "clip": [
-        "31",
-        0
+        "36",
+        1
       ],
       "vae": [
         "13",
-        0
-      ],
-      "image1": [
-        "24",
         0
       ]
     },
     "class_type": "TextEncodeQwenImageEditPlus",
     "_meta": {
       "title": "TextEncodeQwenImageEditPlus"
-    }
-  },
-  "24": {
-    "inputs": {
-      "upscale_method": "lanczos",
-      "megapixels": 1,
-      "resolution_steps": 1,
-      "image": [
-        "15",
-        0
-      ]
-    },
-    "class_type": "ImageScaleToTotalPixels",
-    "_meta": {
-      "title": "缩放图像（像素）"
     }
   },
   "28": {
@@ -167,6 +146,135 @@
     "class_type": "CLIPLoader",
     "_meta": {
       "title": "加载CLIP"
+    }
+  },
+  "32": {
+    "inputs": {
+      "lora_name": "Qwen_Snofs_1_3.safetensors",
+      "strength_model": 0.6,
+      "strength_clip": 0.6,
+      "model": [
+        "28",
+        0
+      ],
+      "clip": [
+        "31",
+        0
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "加载LoRA"
+    }
+  },
+  "33": {
+    "inputs": {
+      "lora_name": "Pussy_Peach_Rear_v2_XL.safetensors",
+      "strength_model": 1,
+      "strength_clip": 1,
+      "model": [
+        "32",
+        0
+      ],
+      "clip": [
+        "32",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "加载LoRA"
+    }
+  },
+  "36": {
+    "inputs": {
+      "lora_name": "Better_detailed_pussy_and_anus_v3.0.safetensors",
+      "strength_model": 0.4,
+      "strength_clip": 2,
+      "model": [
+        "33",
+        0
+      ],
+      "clip": [
+        "33",
+        1
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "加载LoRA"
+    }
+  },
+  "37:0": {
+    "inputs": {
+      "image": "Image_1767501987459_939.jpg"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "加载图像"
+    }
+  },
+  "37:1": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "megapixels": 1,
+      "resolution_steps": 1,
+      "image": [
+        "37:0",
+        0
+      ]
+    },
+    "class_type": "ImageScaleToTotalPixels",
+    "_meta": {
+      "title": "缩放图像（像素）"
+    }
+  },
+  "38:0": {
+    "inputs": {
+      "image": "Image_1767501987459_939.jpg"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "加载图像"
+    }
+  },
+  "38:1": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "megapixels": 1,
+      "resolution_steps": 1,
+      "image": [
+        "38:0",
+        0
+      ]
+    },
+    "class_type": "ImageScaleToTotalPixels",
+    "_meta": {
+      "title": "缩放图像（像素）"
+    }
+  },
+  "39:0": {
+    "inputs": {
+      "image": "Image_1767501987459_939.jpg"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "加载图像"
+    }
+  },
+  "39:1": {
+    "inputs": {
+      "upscale_method": "lanczos",
+      "megapixels": 1,
+      "resolution_steps": 1,
+      "image": [
+        "39:0",
+        0
+      ]
+    },
+    "class_type": "ImageScaleToTotalPixels",
+    "_meta": {
+      "title": "缩放图像（像素）"
     }
   }
 }

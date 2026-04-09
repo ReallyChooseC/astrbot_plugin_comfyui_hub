@@ -181,10 +181,10 @@
     "hint": "图生图工作流中负面提示词的节点编号"
   },
   "img2img_input_node": {
-    "description": "图生图输入节点ID",
+    "description": "图生图输入节点ID（逗号分隔支持多图）",
     "type": "string",
-    "default": "15",
-    "hint": "图生图工作流中LoadImage节点的编号"
+    "default": "37,38,39",
+    "hint": "图生图工作流中LoadImage节点的编号，多图输入时用逗号分隔（如: 15,16,17），图片按顺序分配到对应节点"
   },
   "enable_img2img_input_censorship": {
     "description": "启用图生图输入审查",

@@ -13,12 +13,13 @@ from .comfyui_api import ComfyUIAPI
 class ImageToImage:
     def __init__(self, api: ComfyUIAPI, workflow_path: str,
                  positive_node: str = "20", negative_node: str = "21",
-                 input_node: str = "15"):
+                 input_nodes: list = None):
         self.api = api
         self.workflow = self._load_workflow(workflow_path)
         self.positive_node = positive_node
         self.negative_node = negative_node
-        self.input_node = input_node
+        # 输入节点列表，按顺序分配图片
+        self.input_nodes = input_nodes or []
 
     @staticmethod
     def _load_workflow(path: str) -> dict:
@@ -72,44 +73,72 @@ class ImageToImage:
             logger.error(f"[ComfyUI] 动图检测/处理失败: {e}")
             return None
 
-    async def generate(self, image_data: bytes, prompt: str, negative: str = "") -> Optional[bytes]:
-        """生成图片"""
+    async def generate(self, image_data_list: list, prompt: str, negative: str = "") -> Optional[bytes]:
+        """生成图片
+        
+        Args:
+            image_data_list: 图片数据列表，每个元素为 bytes。第一张图对应主输入节点，
+                            后续图片对应额外输入节点。
+            prompt: 正面提示词
+            negative: 负面提示词
+        """
         workflow = json.loads(json.dumps(self.workflow))
 
-        # 处理动图：如果是动图则提取首帧，处理失败则拒绝
-        processed_image_data = self._extract_first_frame_if_gif(image_data)
-        if processed_image_data is None:
-            logger.error("[ComfyUI] 不支持动图输入，请使用静态图片")
-            return None
+        # 处理所有图片（动图提取首帧）并上传
+        uploaded_filenames = []
+        for i, img_data in enumerate(image_data_list):
+            processed = self._extract_first_frame_if_gif(img_data)
+            if processed is None:
+                logger.error(f"[ComfyUI] 第 {i+1} 张图片不支持动图输入，请使用静态图片")
+                return None
 
-        # 上传图片到 ComfyUI（使用时间戳避免缓存）
-        filename = f"img2img_input_{int(time.time() * 1000)}_{random.randint(1000, 9999)}.png"
-        try:
-            await self.api.upload_image(filename, processed_image_data)
-        except Exception as e:
-            logger.error(f"[ComfyUI] 上传图片失败: {e}")
-            return None
+            filename = f"img2img_input_{int(time.time() * 1000)}_{random.randint(1000, 9999)}.png"
+            try:
+                await self.api.upload_image(filename, processed)
+                uploaded_filenames.append(filename)
+            except Exception as e:
+                logger.error(f"[ComfyUI] 上传第 {i+1} 张图片失败: {e}")
+                return None
 
-        # 更新工作流中的图片引用
-        # 方式1：使用配置的输入节点 ID
-        load_image_found = False
-        if self.input_node and self.input_node in workflow:
-            node_data = workflow[self.input_node]
+        # 收集所有 LoadImage 节点（按节点ID排序）
+        load_image_nodes = []
+        for node_id, node_data in workflow.items():
             if isinstance(node_data, dict) and node_data.get("class_type") == "LoadImage":
-                node_data["inputs"]["image"] = filename
-                load_image_found = True
+                load_image_nodes.append((node_id, node_data))
 
-        # 方式2：如果未指定输入节点，则查找 LoadImage 节点并更新其 image 字段
-        if not load_image_found:
-            for node_id, node_data in workflow.items():
+        # 将上传的图片分配到对应的 LoadImage 节点
+        assigned_count = 0
+        # 优先按配置的输入节点顺序分配
+        for input_node_id in self.input_nodes:
+            if assigned_count >= len(uploaded_filenames):
+                break
+            if input_node_id in workflow:
+                node_data = workflow[input_node_id]
                 if isinstance(node_data, dict) and node_data.get("class_type") == "LoadImage":
-                    node_data["inputs"]["image"] = filename
-                    load_image_found = True
-                    break
+                    node_data["inputs"]["image"] = uploaded_filenames[assigned_count]
+                    assigned_count += 1
 
-        if not load_image_found:
+        # 如果还有未分配的图片，按 LoadImage 节点顺序分配剩余节点
+        if assigned_count < len(uploaded_filenames):
+            remaining_nodes = [(nid, nd) for nid, nd in load_image_nodes
+                              if nid not in self.input_nodes]
+            for node_id, node_data in remaining_nodes:
+                if assigned_count >= len(uploaded_filenames):
+                    break
+                node_data["inputs"]["image"] = uploaded_filenames[assigned_count]
+                assigned_count += 1
+
+        # 如果没有通过配置节点分配成功，回退到旧逻辑
+        if assigned_count == 0 and load_image_nodes:
+            load_image_nodes[0][1]["inputs"]["image"] = uploaded_filenames[0]
+            assigned_count = 1
+
+        if assigned_count == 0:
             logger.error("[ComfyUI] 工作流中未找到 LoadImage 节点")
             return None
+
+        if assigned_count < len(uploaded_filenames):
+            logger.warning(f"[ComfyUI] 上传了 {len(uploaded_filenames)} 张图片，但只有 {assigned_count} 个 LoadImage 节点可用")
 
         # 设置正面提示词
         pos_node = workflow.get(self.positive_node)

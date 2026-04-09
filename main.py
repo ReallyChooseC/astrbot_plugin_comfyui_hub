@@ -108,12 +108,16 @@ class ComfyUIHub(Star):
                     shutil.copy(example_path, img2img_workflow_path)
 
             if img2img_workflow_path.exists():
+                # 解析输入节点配置，支持逗号分隔的多节点
+                input_node_str = config.get("img2img_input_node", "15")
+                input_nodes_list = [n.strip() for n in input_node_str.split(",") if n.strip()]
+
                 self.img2img = ImageToImage(
                     self.api,
                     str(img2img_workflow_path),
                     config.get("img2img_positive_node", "20"),
                     config.get("img2img_negative_node", "21"),
-                    config.get("img2img_input_node", "15")
+                    input_nodes_list
                 )
 
         # 初始化审查设置
@@ -1036,33 +1040,32 @@ class ComfyUIHub(Star):
 
     @filter.command("img2img", alias={'图生图', '图像编辑', 'i2i'})
     async def img2img(self, event: AstrMessageEvent):
-        """图生图指令，输入图片和提示词输出图片"""
+        """图生图指令，输入图片和提示词输出图片，支持多图输入"""
         # 检查图生图功能是否开启
         if not self.img2img:
             yield event.plain_result("⚠️ 图生图功能未开启")
             return
 
-        # 获取消息中的图片
+        # 获取消息中的所有图片
         from astrbot.api.message_components import Image as ImageComponent, Reply as ReplyComponent
         chain = event.get_messages()
-        image_data = None
+        image_data_list = []
 
         for msg in chain:
             # 情况1：处理 Reply 消息中的图片
             if isinstance(msg, ReplyComponent) and msg.chain:
                 for chain_msg in msg.chain:
                     if isinstance(chain_msg, ImageComponent):
-                        image_data = await self._get_image_data(chain_msg)
-                        if image_data:
-                            break
+                        img_data = await self._get_image_data(chain_msg)
+                        if img_data:
+                            image_data_list.append(img_data)
             # 情况2：处理直接的图片消息
             elif isinstance(msg, ImageComponent):
-                image_data = await self._get_image_data(msg)
+                img_data = await self._get_image_data(msg)
+                if img_data:
+                    image_data_list.append(img_data)
 
-            if image_data:
-                break
-
-        if not image_data:
+        if not image_data_list:
             yield event.plain_result("请发送或回复一张图片")
             return
 
@@ -1089,13 +1092,14 @@ class ComfyUIHub(Star):
             yield event.plain_result("请输入提示词")
             return
 
-        logger.info(f"成功获取图片数据，大小: {len(image_data)} 字节")
+        logger.info(f"成功获取 {len(image_data_list)} 张图片，大小: {', '.join(f'{len(d)} 字节' for d in image_data_list)}")
 
-        # 图生图输入图片审查
-        is_safe, message = await self._check_img2img_input_censorship(event, image_data)
-        if not is_safe:
-            yield event.plain_result(message)
-            return
+        # 图生图输入图片审查（审查所有输入图片）
+        for i, img_data in enumerate(image_data_list):
+            is_safe, message = await self._check_img2img_input_censorship(event, img_data)
+            if not is_safe:
+                yield event.plain_result(message)
+                return
 
         # 输入文本审查（与文生图相同）
         user_id = event.get_sender_id()
@@ -1144,7 +1148,7 @@ class ComfyUIHub(Star):
         await self._send_text_message(event, "正在生成图片...")
 
         # 生成图片
-        result_image = await self.img2img.generate(image_data, positive, negative)
+        result_image = await self.img2img.generate(image_data_list, positive, negative)
 
         if result_image:
             # 图生图输出图片审查
