@@ -207,7 +207,7 @@
   },
   "37:0": {
     "inputs": {
-      "image": "Image_1767501987459_939.jpg"
+      "image": ""
     },
     "class_type": "LoadImage",
     "_meta": {
@@ -231,7 +231,7 @@
   },
   "38:0": {
     "inputs": {
-      "image": "Image_1767501987459_939.jpg"
+      "image": ""
     },
     "class_type": "LoadImage",
     "_meta": {
@@ -255,7 +255,7 @@
   },
   "39:0": {
     "inputs": {
-      "image": "Image_1767501987459_939.jpg"
+      "image": ""
     },
     "class_type": "LoadImage",
     "_meta": {
