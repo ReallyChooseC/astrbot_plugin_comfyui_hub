@@ -132,6 +132,13 @@
     "default": true,
     "hint": "开启后管理员发送的绘图请求将跳过审查系统"
   },
+  "censorship_failure_mode": {
+    "description": "审查异常时的处理策略",
+    "type": "string",
+    "default": "fail_open",
+    "options": ["fail_open", "fail_closed"],
+    "hint": "LLM 审查异常（提供商挂掉、超时、API 报错）时的默认行为：fail_open 放行，fail_closed 拦截"
+  },
   "enable_tagger": {
     "description": "启用图片标签识别功能",
     "type": "bool",

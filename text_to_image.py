@@ -1,4 +1,5 @@
 import json
+import math
 import random
 from typing import Optional
 
@@ -8,6 +9,11 @@ from .comfyui_api import ComfyUIAPI
 
 
 class TextToImage:
+    MAX_OUTPUT_PIXELS = 2048 * 2048
+    MIN_DIMENSION = 64
+    MAX_DIMENSION = 4096
+    ALIGN = 8
+
     def __init__(self, api: ComfyUIAPI, workflow_path: str,
                  positive_node: str = "6", negative_node: str = "7",
                  resolution_node: str = "", width_field: str = "width", height_field: str = "height",
@@ -42,6 +48,23 @@ class TextToImage:
         inputs[first_key] = prompt
         return True
 
+    @classmethod
+    def _clamp_dimensions(cls, width: int, height: int) -> tuple:
+        """将用户传入的 width/height 钳制到合法范围内并按 ALIGN 对齐"""
+        w = max(cls.MIN_DIMENSION, min(int(width), cls.MAX_DIMENSION))
+        h = max(cls.MIN_DIMENSION, min(int(height), cls.MAX_DIMENSION))
+
+        pixels = w * h
+        if pixels > cls.MAX_OUTPUT_PIXELS:
+            scale = math.sqrt(cls.MAX_OUTPUT_PIXELS / pixels)
+            w = int(w * scale)
+            h = int(h * scale)
+
+        align = cls.ALIGN
+        w = max(align, (w // align) * align)
+        h = max(align, (h // align) * align)
+        return w, h
+
     async def generate(self, prompt: str, negative: str = "bad hands", width: int = None, height: int = None,
                        scale: float = None, max_wait: float = 300.0, on_wait_callback=None, on_submitted_callback=None) -> Optional[bytes]:
         """生成图片"""
@@ -59,6 +82,13 @@ class TextToImage:
         neg_node = workflow.get(self.negative_node)
         if neg_node:
             self._set_prompt(neg_node, negative)
+
+        if width is not None and height is not None:
+            try:
+                width, height = self._clamp_dimensions(width, height)
+            except (TypeError, ValueError) as e:
+                logger.warning(f"[ComfyUI] 分辨率参数无效，已忽略: {e}")
+                width = height = None
 
         if width is not None and height is not None:
             if self.resolution_node:

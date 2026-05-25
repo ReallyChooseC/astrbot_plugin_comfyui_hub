@@ -1,5 +1,5 @@
 import asyncio
-import random
+import uuid
 from typing import Optional
 
 import aiohttp
@@ -9,7 +9,8 @@ class ComfyUIAPI:
     def __init__(self, server_url: str = "http://127.0.0.1:8188", timeout: int = 300):
         self.server_url = server_url
         self.timeout = timeout
-        self.client_id = str(random.randint(100000, 999999))
+        # 用 UUID 避免多 AstrBot 实例共享同一 ComfyUI 时 client_id 撞号导致的归属判错
+        self.client_id = uuid.uuid4().hex
         # 插件级别的异步锁，确保同一时刻只有一个任务进入"等待队列空闲→提交"流程
         self._submit_lock = asyncio.Lock()
 
@@ -162,68 +163,19 @@ class ComfyUIAPI:
         """提交任务，返回 prompt_id（仅提交，不等待结果，不经过队列缓冲）"""
         return await self._submit_prompt(workflow)
 
-    async def queue_and_wait_image(self, workflow: dict, max_wait: float = 300.0, on_wait_callback=None, on_submitted_callback=None) -> Optional[bytes]:
-        """提交工作流并等待图片结果（带队列缓冲）
+    async def _queue_and_wait(self, workflow: dict, fetch_fn, label: str,
+                              max_wait: float = 300.0,
+                              on_wait_callback=None,
+                              on_submitted_callback=None):
+        """提交工作流并通过 fetch_fn 获取结果（带队列缓冲）
 
         使用 asyncio.Lock 确保同一时刻只有一个任务在"等待队列空闲→提交"流程中，
         避免 API 检查与提交之间的竞态条件。等待结果在锁外进行，允许后续任务排队。
-        同时通过 /queue 接口检测残留的历史任务。
 
         Args:
             workflow: 工作流字典
-            max_wait: 队列最大等待秒数，超时后直接提交
-            on_wait_callback: 队列等待回调，签名为 async (running: int, pending: int, waited: float) -> None
-            on_submitted_callback: 提交成功后的回调，签名为 async (prompt_id: str, queue_position: int, tasks_ahead: int) -> None，
-                                   queue_position 为任务在队列中的位置（0表示已在运行），tasks_ahead 为前方任务数
-        """
-        from astrbot.api import logger
-
-        async with self._submit_lock:
-            # 等待本插件的前一个任务完成后再提交（检查残留的历史任务）
-            queue_waited = await self._wait_queue_idle(max_wait=max_wait, on_wait_callback=on_wait_callback)
-
-            # 计算额外超时：如果强制提交（等待超时），根据队列排队情况延长超时
-            extra_timeout = 0
-            if queue_waited >= max_wait:
-                info = await self.get_queue_info()
-                pending_count = len(info.get("queue_pending", []))
-                extra_timeout = max(120, pending_count * 60)
-                logger.info(f"[ComfyUI] 强制提交，额外增加结果等待超时 {extra_timeout}s（前方排队: {pending_count}）")
-
-            logger.info("[ComfyUI] 开始提交任务")
-            prompt_id = await self._submit_prompt(workflow)
-            if not prompt_id:
-                logger.error("[ComfyUI] 提交任务失败")
-                return None
-
-            # 提交后检测任务在队列中的位置，动态调整超时
-            await asyncio.sleep(1)  # 等待 ComfyUI 处理提交请求
-            queue_position, tasks_ahead, queue_extra = await self._calc_queue_timeout(prompt_id)
-            extra_timeout = max(extra_timeout, queue_extra)
-
-            # 回调通知提交成功及队列位置
-            if on_submitted_callback:
-                try:
-                    await on_submitted_callback(prompt_id, queue_position, tasks_ahead)
-                except Exception as e:
-                    logger.error(f"[ComfyUI] 提交回调异常: {e}")
-
-        # 在锁外等待结果，允许后续任务进入"等待队列→提交"流程
-        logger.info(f"[ComfyUI] 任务 {prompt_id} 已提交，等待图片结果...（总超时: {self.timeout + extra_timeout}s）")
-        result = await self.wait_result(prompt_id, extra_timeout=extra_timeout)
-
-        if result:
-            logger.info(f"[ComfyUI] 任务 {prompt_id} 完成")
-        else:
-            logger.error(f"[ComfyUI] 任务 {prompt_id} 等待结果超时或失败")
-
-        return result
-
-    async def queue_and_wait_video(self, workflow: dict, max_wait: float = 300.0, on_wait_callback=None, on_submitted_callback=None) -> Optional[bytes]:
-        """提交工作流并等待视频结果（带队列缓冲）
-
-        Args:
-            workflow: 工作流字典
+            fetch_fn: async (prompt_id, extra_timeout) -> Optional[result] 的回调
+            label: 日志标识，例如 "图片"/"视频"/"文本"
             max_wait: 队列最大等待秒数，超时后直接提交
             on_wait_callback: 队列等待回调
             on_submitted_callback: 提交成功后的回调
@@ -240,7 +192,7 @@ class ComfyUIAPI:
                 extra_timeout = max(120, pending_count * 60)
                 logger.info(f"[ComfyUI] 强制提交，额外增加结果等待超时 {extra_timeout}s（前方排队: {pending_count}）")
 
-            logger.info("[ComfyUI] 开始提交视频任务")
+            logger.info(f"[ComfyUI] 开始提交{label}任务")
             prompt_id = await self._submit_prompt(workflow)
             if not prompt_id:
                 logger.error("[ComfyUI] 提交任务失败")
@@ -256,8 +208,8 @@ class ComfyUIAPI:
                 except Exception as e:
                     logger.error(f"[ComfyUI] 提交回调异常: {e}")
 
-        logger.info(f"[ComfyUI] 任务 {prompt_id} 已提交，等待视频结果...（总超时: {self.timeout + extra_timeout}s）")
-        result = await self.wait_video_result(prompt_id, extra_timeout=extra_timeout)
+        logger.info(f"[ComfyUI] 任务 {prompt_id} 已提交，等待{label}结果...（总超时: {self.timeout + extra_timeout}s）")
+        result = await fetch_fn(prompt_id, extra_timeout)
 
         if result:
             logger.info(f"[ComfyUI] 任务 {prompt_id} 完成")
@@ -266,6 +218,40 @@ class ComfyUIAPI:
 
         return result
 
+    async def queue_and_wait_image(self, workflow: dict, max_wait: float = 300.0,
+                                   on_wait_callback=None, on_submitted_callback=None) -> Optional[bytes]:
+        """提交工作流并等待图片结果（带队列缓冲）"""
+        return await self._queue_and_wait(
+            workflow, self.wait_result, "图片",
+            max_wait=max_wait,
+            on_wait_callback=on_wait_callback,
+            on_submitted_callback=on_submitted_callback,
+        )
+
+    async def queue_and_wait_video(self, workflow: dict, max_wait: float = 300.0,
+                                   on_wait_callback=None, on_submitted_callback=None) -> Optional[bytes]:
+        """提交工作流并等待视频结果（带队列缓冲）"""
+        return await self._queue_and_wait(
+            workflow, self.wait_video_result, "视频",
+            max_wait=max_wait,
+            on_wait_callback=on_wait_callback,
+            on_submitted_callback=on_submitted_callback,
+        )
+
+    async def queue_and_wait_text(self, workflow: dict, output_node: str = "",
+                                  max_wait: float = 300.0,
+                                  on_wait_callback=None, on_submitted_callback=None) -> Optional[str]:
+        """提交工作流并等待文本结果（带队列缓冲）"""
+        async def fetch(prompt_id: str, extra_timeout: int):
+            return await self.wait_text_result(prompt_id, output_node, extra_timeout=extra_timeout)
+
+        return await self._queue_and_wait(
+            workflow, fetch, "文本",
+            max_wait=max_wait,
+            on_wait_callback=on_wait_callback,
+            on_submitted_callback=on_submitted_callback,
+        )
+
     async def wait_video_result(self, prompt_id: str, extra_timeout: int = 0) -> Optional[bytes]:
         """等待并下载视频结果
 
@@ -273,8 +259,10 @@ class ComfyUIAPI:
         每项包含 filename / subfolder / type 字段。
         """
         total_timeout = self.timeout + extra_timeout
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + total_timeout
         async with aiohttp.ClientSession() as session:
-            for _ in range(total_timeout):
+            while loop.time() < deadline:
                 await asyncio.sleep(1)
                 try:
                     async with session.get(f"{self.server_url}/history/{prompt_id}") as resp:
@@ -312,59 +300,6 @@ class ComfyUIAPI:
             return False
         lower = filename.lower()
         return any(lower.endswith(ext) for ext in (".mp4", ".webm", ".mov", ".mkv", ".avi", ".gif"))
-
-    async def queue_and_wait_text(self, workflow: dict, output_node: str = "", max_wait: float = 300.0, on_wait_callback=None, on_submitted_callback=None) -> Optional[str]:
-        """提交工作流并等待文本结果（带队列缓冲）
-
-        Args:
-            workflow: 工作流字典
-            output_node: 输出节点ID
-            max_wait: 队列最大等待秒数，超时后直接提交
-            on_wait_callback: 队列等待回调，签名为 async (running: int, pending: int, waited: float) -> None
-            on_submitted_callback: 提交成功后的回调，签名为 async (prompt_id: str, queue_position: int, tasks_ahead: int) -> None
-        """
-        from astrbot.api import logger
-
-        async with self._submit_lock:
-            # 等待本插件的前一个任务完成后再提交
-            queue_waited = await self._wait_queue_idle(max_wait=max_wait, on_wait_callback=on_wait_callback)
-
-            # 计算额外超时
-            extra_timeout = 0
-            if queue_waited >= max_wait:
-                info = await self.get_queue_info()
-                pending_count = len(info.get("queue_pending", []))
-                extra_timeout = max(120, pending_count * 60)
-                logger.info(f"[ComfyUI] 强制提交，额外增加结果等待超时 {extra_timeout}s（前方排队: {pending_count}）")
-
-            logger.info("[ComfyUI] 开始提交任务")
-            prompt_id = await self._submit_prompt(workflow)
-            if not prompt_id:
-                logger.error("[ComfyUI] 提交任务失败")
-                return None
-
-            # 提交后检测任务在队列中的位置，动态调整超时
-            await asyncio.sleep(1)
-            queue_position, tasks_ahead, queue_extra = await self._calc_queue_timeout(prompt_id)
-            extra_timeout = max(extra_timeout, queue_extra)
-
-            # 回调通知提交成功及队列位置
-            if on_submitted_callback:
-                try:
-                    await on_submitted_callback(prompt_id, queue_position, tasks_ahead)
-                except Exception as e:
-                    logger.error(f"[ComfyUI] 提交回调异常: {e}")
-
-        # 在锁外等待结果，允许后续任务进入"等待队列→提交"流程
-        logger.info(f"[ComfyUI] 任务 {prompt_id} 已提交，等待文本结果...（总超时: {self.timeout + extra_timeout}s）")
-        result = await self.wait_text_result(prompt_id, output_node, extra_timeout=extra_timeout)
-
-        if result:
-            logger.info(f"[ComfyUI] 任务 {prompt_id} 完成")
-        else:
-            logger.error(f"[ComfyUI] 任务 {prompt_id} 等待结果超时或失败")
-
-        return result
 
     async def _calc_queue_timeout(self, prompt_id: str) -> tuple:
         """根据任务在队列中的位置计算额外超时
@@ -417,8 +352,10 @@ class ComfyUIAPI:
             extra_timeout: 额外超时秒数，用于强制提交时补偿队列排队时间
         """
         total_timeout = self.timeout + extra_timeout
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + total_timeout
         async with aiohttp.ClientSession() as session:
-            for _ in range(total_timeout):
+            while loop.time() < deadline:
                 await asyncio.sleep(1)
                 try:
                     async with session.get(f"{self.server_url}/history/{prompt_id}") as resp:
@@ -463,8 +400,10 @@ class ComfyUIAPI:
             extra_timeout: 额外超时秒数，用于强制提交时补偿队列排队时间
         """
         total_timeout = self.timeout + extra_timeout
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + total_timeout
         async with aiohttp.ClientSession() as session:
-            for _ in range(total_timeout):
+            while loop.time() < deadline:
                 await asyncio.sleep(1)
                 try:
                     async with session.get(f"{self.server_url}/history/{prompt_id}") as resp:
