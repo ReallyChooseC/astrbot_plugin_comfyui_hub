@@ -22,7 +22,7 @@ class ImageToVideo:
                  resolution_height_field: str = "height",
                  fps_node: str = "18", fps_field: str = "value",
                  length_node: str = "20", length_field: str = "value",
-                 max_fps: int = 24):
+                 max_frames: int = 240):
         self.api = api
         self.workflow = self._load_workflow(workflow_path)
         self.positive_node = positive_node
@@ -35,7 +35,7 @@ class ImageToVideo:
         self.fps_field = fps_field
         self.length_node = length_node
         self.length_field = length_field
-        self.max_fps = max_fps
+        self.max_frames = max_frames
 
     @staticmethod
     def _load_workflow(path: str) -> dict:
@@ -105,6 +105,16 @@ class ImageToVideo:
         h = max(align, (h // align) * align)
         return w, h
 
+    @staticmethod
+    def _read_node_value(workflow: dict, node_id: str, field: str):
+        """读取工作流节点上某个字段的当前值，找不到返回 None"""
+        if not node_id or node_id not in workflow:
+            return None
+        node = workflow[node_id]
+        if not isinstance(node, dict):
+            return None
+        return node.get("inputs", {}).get(field)
+
     async def generate(self, image_data: bytes, prompt: str, negative: str = "",
                        fps: Optional[float] = None, length: Optional[float] = None,
                        max_wait: float = 300.0, on_wait_callback=None,
@@ -115,8 +125,9 @@ class ImageToVideo:
             image_data: 输入图片数据
             prompt: 正面提示词（可为空字符串）
             negative: 负面提示词
-            fps: 帧率，None 表示沿用工作流默认值；将被钳制到 [1, max_fps]
-            length: 视频长度（秒），None 表示沿用工作流默认值
+            fps: 帧率，None 表示沿用工作流默认值
+            length: 视频长度（秒），None 表示沿用工作流默认值；
+                    若 fps × length 超过 max_frames，会自动缩短 length 以满足上限
         """
         workflow = json.loads(json.dumps(self.workflow))
 
@@ -163,21 +174,44 @@ class ImageToVideo:
                 res_node["inputs"][self.resolution_height_field] = size[1]
                 logger.info(f"[ComfyUI] 输出分辨率: {size[0]}x{size[1]}")
 
-        # 写入 fps（钳制范围）
-        if fps is not None and self.fps_node and self.fps_node in workflow:
-            clamped_fps = max(1, min(int(round(fps)), self.max_fps))
-            fps_node_data = workflow[self.fps_node]
-            if isinstance(fps_node_data, dict) and "inputs" in fps_node_data:
-                fps_node_data["inputs"][self.fps_field] = clamped_fps
-                logger.info(f"[ComfyUI] 帧率: {clamped_fps}")
+        # 计算最终 fps 与 length：未指定的字段沿用工作流默认值，
+        # 然后按 max_frames 上限统一钳制 length
+        fps_default = self._read_node_value(workflow, self.fps_node, self.fps_field)
+        length_default = self._read_node_value(workflow, self.length_node, self.length_field)
 
-        # 写入视频长度（秒）
-        if length is not None and self.length_node and self.length_node in workflow:
-            clamped_length = max(0.1, float(length))
+        final_fps = float(fps) if fps is not None else (float(fps_default) if fps_default is not None else None)
+        final_length = float(length) if length is not None else (float(length_default) if length_default is not None else None)
+
+        if final_fps is not None:
+            final_fps = max(1.0, final_fps)
+
+        if (self.max_frames and self.max_frames > 0 and
+                final_fps is not None and final_length is not None):
+            max_length = self.max_frames / final_fps
+            if final_length > max_length:
+                logger.info(
+                    f"[ComfyUI] 总帧数 {final_fps * final_length:.1f} 超过上限 {self.max_frames}，"
+                    f"将视频长度从 {final_length}s 调整为 {max_length:.2f}s"
+                )
+                final_length = max_length
+
+        # 写入 fps
+        if fps is not None and self.fps_node and self.fps_node in workflow:
+            fps_node_data = workflow[self.fps_node]
+            if isinstance(fps_node_data, dict) and "inputs" in fps_node_data and final_fps is not None:
+                fps_node_data["inputs"][self.fps_field] = final_fps
+                logger.info(f"[ComfyUI] 帧率: {final_fps}")
+
+        # 写入视频长度（秒）；即使用户未显式指定 length，只要被 max_frames 钳制了也要写入
+        if final_length is not None and self.length_node and self.length_node in workflow:
             len_node_data = workflow[self.length_node]
             if isinstance(len_node_data, dict) and "inputs" in len_node_data:
-                len_node_data["inputs"][self.length_field] = clamped_length
-                logger.info(f"[ComfyUI] 视频长度: {clamped_length}s")
+                # 只在用户主动设置或被钳制时写入，避免覆盖工作流默认值
+                user_set = length is not None
+                clamped = (length_default is not None and final_length < float(length_default))
+                if user_set or clamped:
+                    len_node_data["inputs"][self.length_field] = max(0.1, final_length)
+                    logger.info(f"[ComfyUI] 视频长度: {max(0.1, final_length)}s")
 
         # 设置正面提示词
         pos_node = workflow.get(self.positive_node)

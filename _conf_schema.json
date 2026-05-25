@@ -295,10 +295,10 @@
     "default": "value",
     "hint": "长度节点中数值字段的字段名"
   },
-  "img2video_max_fps": {
-    "description": "最大帧率",
+  "img2video_max_frames": {
+    "description": "最大总帧数",
     "type": "int",
-    "default": 24,
-    "hint": "用户在提示词中指定 fps 时的上限"
+    "default": 240,
+    "hint": "fps × 视频长度（秒）的上限。超过时会自动缩短视频长度以满足上限。设为 0 则不限制"
   }
 }

@@ -233,7 +233,7 @@ class ComfyUIHub(Star):
             config.get("img2video_fps_field", "value"),
             config.get("img2video_length_node", "20"),
             config.get("img2video_length_field", "value"),
-            int(config.get("img2video_max_fps", 24)),
+            int(config.get("img2video_max_frames", 240)),
         )
 
     # ----- 数据加载与持久化 -----
