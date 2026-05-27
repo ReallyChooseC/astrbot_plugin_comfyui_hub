@@ -1,6 +1,6 @@
 name: astrbot_plugin_comfyui_hub
 display_name: ComfyUI集成
 desc: 为 AstrBot 提供 ComfyUI 调用能力的插件，支持文生图 / 图生图 / 图生视频 / 标签识别。
-version: v1.2.0
+version: v1.2.1
 author: ChooseC
 repo: https://github.com/ReallyChooseC/astrbot_plugin_comfyui_hub
