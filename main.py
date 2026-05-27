@@ -131,6 +131,17 @@ class ComfyUIHub(Star):
         self.img2img_output_censorship_use_llm = config.get("img2img_output_censorship_use_llm", True)
         self.img2img_output_censorship_use_tagger = config.get("img2img_output_censorship_use_tagger", True)
 
+        # 白名单
+        self.enable_group_whitelist = config.get("enable_group_whitelist", False)
+        self.enable_user_whitelist = config.get("enable_user_whitelist", False)
+        self.whitelist_groups = {str(g).strip() for g in config.get("whitelist_groups", []) if str(g).strip()}
+        self.whitelist_users = {str(u).strip() for u in config.get("whitelist_users", []) if str(u).strip()}
+        self.whitelist_admin_bypass = config.get("whitelist_admin_bypass", True)
+        self.whitelist_reject_message = config.get(
+            "whitelist_reject_message",
+            "⚠️ 当前会话未在白名单内，绘图服务暂不可用。",
+        )
+
     def _init_txt2img(self, config, plugin_dir, workflow_dir):
         if not config.get("enable_txt2img", True):
             return None
@@ -901,6 +912,35 @@ class ComfyUIHub(Star):
         raw_tags = re.split(r',|\[|\]', tags_part)
         return [t.strip() for t in raw_tags if t.strip()]
 
+    # ----- 白名单 -----
+
+    def _check_whitelist(self, event: AstrMessageEvent) -> Tuple[bool, Optional[str]]:
+        """检查会话是否在白名单内。
+
+        群聊白名单与私聊白名单分别由 enable_group_whitelist / enable_user_whitelist 控制。
+        当对应开关开启时，列表为空相当于禁用该类型会话；开关关闭则不限制该类型会话。
+
+        Returns:
+            (passed, reject_message): 通过返回 (True, None)；不通过返回 (False, message_or_None)，
+            message 为 None 表示静默忽略
+        """
+        if self.whitelist_admin_bypass and event.is_admin():
+            return True, None
+
+        group_id = event.get_group_id()
+        if group_id:
+            if self.enable_group_whitelist and str(group_id) not in self.whitelist_groups:
+                msg = self.whitelist_reject_message.strip() if self.whitelist_reject_message else ""
+                return False, msg or None
+            return True, None
+
+        if self.enable_user_whitelist:
+            user_id = event.get_sender_id()
+            if not user_id or str(user_id) not in self.whitelist_users:
+                msg = self.whitelist_reject_message.strip() if self.whitelist_reject_message else ""
+                return False, msg or None
+        return True, None
+
     # ----- 提取消息中的图片 -----
 
     async def _collect_images_from_event(self, event: AstrMessageEvent, take_first_only: bool = False) -> list:
@@ -931,6 +971,12 @@ class ComfyUIHub(Star):
         """文生图指令"""
         if not self.txt2img:
             yield event.plain_result("⚠️ 文生图功能未开启")
+            return
+
+        passed, reject_msg = self._check_whitelist(event)
+        if not passed:
+            if reject_msg:
+                yield event.plain_result(reject_msg)
             return
 
         text = _strip_command_prefix(event.message_str.strip(), DRAW_ALIASES)
@@ -989,6 +1035,10 @@ class ComfyUIHub(Star):
     @filter.command("delete", alias={'撤回', 'recall'})
     async def delete_msg(self, event: AstrMessageEvent):
         """引用撤回绘图功能输出的消息"""
+        passed, _ = self._check_whitelist(event)
+        if not passed:
+            return
+
         chain = event.get_messages()
         if not chain:
             return
@@ -1052,6 +1102,12 @@ class ComfyUIHub(Star):
             yield event.plain_result("⚠️ 图片标签识别功能未开启")
             return
 
+        passed, reject_msg = self._check_whitelist(event)
+        if not passed:
+            if reject_msg:
+                yield event.plain_result(reject_msg)
+            return
+
         images = await self._collect_images_from_event(event, take_first_only=True)
         if not images:
             yield event.plain_result("请发送或回复一张图片")
@@ -1085,6 +1141,12 @@ class ComfyUIHub(Star):
         """图生图指令"""
         if not self._img2img_engine:
             yield event.plain_result("⚠️ 图生图功能未开启")
+            return
+
+        passed, reject_msg = self._check_whitelist(event)
+        if not passed:
+            if reject_msg:
+                yield event.plain_result(reject_msg)
             return
 
         image_data_list = await self._collect_images_from_event(event)
@@ -1151,6 +1213,12 @@ class ComfyUIHub(Star):
         """图生视频指令"""
         if not self._img2video_engine:
             yield event.plain_result("⚠️ 图生视频功能未开启")
+            return
+
+        passed, reject_msg = self._check_whitelist(event)
+        if not passed:
+            if reject_msg:
+                yield event.plain_result(reject_msg)
             return
 
         from astrbot.api.message_components import Video as VideoComponent

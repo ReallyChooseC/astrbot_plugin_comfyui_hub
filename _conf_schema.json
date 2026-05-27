@@ -1,4 +1,46 @@
 {
+  "enable_group_whitelist": {
+    "description": "启用群聊白名单",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后仅 whitelist_groups 内的群可使用本插件功能；列表为空时所有群均无法使用"
+  },
+  "whitelist_groups": {
+    "description": "群聊白名单",
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "default": [],
+    "hint": "允许使用本插件的群号列表（字符串），逐项填入"
+  },
+  "enable_user_whitelist": {
+    "description": "启用私聊白名单",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后仅 whitelist_users 内的用户可在私聊中使用本插件功能；列表为空时私聊均无法使用"
+  },
+  "whitelist_users": {
+    "description": "私聊用户白名单",
+    "type": "list",
+    "items": {
+      "type": "string"
+    },
+    "default": [],
+    "hint": "允许在私聊中使用本插件的用户ID列表（字符串），逐项填入"
+  },
+  "whitelist_admin_bypass": {
+    "description": "管理员绕过白名单",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后管理员发送的请求将跳过白名单检查"
+  },
+  "whitelist_reject_message": {
+    "description": "白名单外拒绝消息",
+    "type": "text",
+    "default": "⚠️ 当前会话未在白名单内，绘图服务暂不可用。",
+    "hint": "白名单外的会话使用本插件命令时返回的提示文本，支持换行；留空则静默忽略不返回任何消息"
+  },
   "enable_txt2img": {
     "description": "启用文生图功能",
     "type": "bool",
